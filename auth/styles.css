@@ -18,8 +18,9 @@ body { margin: 0; min-width: 320px; min-height: 100svh; }
 .brand-n { display: inline-block; transform: scaleX(-1); }
 .wordmark-subtitle { font-size: 8px; letter-spacing: .35em; margin-top: 7px; padding-left: .35em; }
 .tool-label { font-size: 10px; font-weight: 500; letter-spacing: .12em; color: #a3b1aa; border: 1px solid var(--line); border-radius: 5px; padding: 7px 9px; }
-.workspace { flex: 1; display: grid; place-items: center; padding: 48px 0; }
+.workspace { flex: 1; display: grid; place-items: center; padding: 24px 0 36px; }
 .access-area { width: 100%; max-width: 460px; min-width: 0; }
+.stone-emblem { display: block; width: 240px; max-width: 100%; height: auto; margin: 0 auto 8px; animation: float 8s ease-in-out infinite; }
 .card { width: 100%; padding: 32px; border: 1px solid var(--line); border-radius: 16px; background: linear-gradient(140deg, #17251f, #121c18 65%); box-shadow: 0 16px 48px #0002; }
 .card-topline { display: flex; align-items: center; gap: 10px; margin-bottom: 32px; color: #dae8de; font-size: 15px; font-weight: 500; letter-spacing: -.02em; }
 .stone-mark { width: 11px; height: 15px; border-radius: 3px; transform: rotate(20deg); background: linear-gradient(135deg, #c2fbd3, #2b9265); box-shadow: 0 0 13px #5add8e26; }
@@ -63,10 +64,13 @@ noscript { display: block; color: #ffb9a8; font-size: 14px; line-height: 1.7; }
   .page-frame { padding: 24px 20px; }
   .wordmark-name { font-size: 26px; }
   .wordmark-subtitle { font-size: 7px; }
-  .workspace { padding: 36px 0; }
+  .workspace { padding: 18px 0 28px; }
+  .stone-emblem { width: 200px; margin-bottom: 4px; }
   .card { padding: 26px 24px; }
   .card-topline { margin-bottom: 27px; }
 }
+@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+@media (prefers-reduced-motion: reduce) { .stone-emblem { animation: none; } }
 @media (max-width: 380px) {
   .page-frame { padding: 20px 16px; }
   .card { padding: 24px 20px; }
