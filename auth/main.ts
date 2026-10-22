@@ -37,7 +37,8 @@ function render(view: View) {
     return;
   }
   if (view.kind === "login") {
-    content.append(element("h1", "logge dich ein - du musst das nicht jedes mal machen."));
+    content.append(element("h1", "logge dich ein"),
+      element("p", "du musst das nicht jedes mal machen.", "login-subtitle"));
     const form = document.createElement("form");
     const email = input("email", "E-Mail-Adresse", "email", "username");
     email.field.value = view.email ?? "";

@@ -30,7 +30,6 @@
   <path d="m341 250 10 37-36 36Z" fill="#054734" fill-opacity=".75"/>
   <path d="m290 114 11 63 28 11 43 20m-108-67 37 36-14 75 28 71m-67-111 39 40 54-2 10 37m-12-37-10-62m-57 105 15-41" stroke="url(#edge)" stroke-width=".7" opacity=".65"/>
   <ellipse cx="308" cy="216" rx="19" ry="43" fill="url(#heart)" opacity=".7" filter="url(#soft)"/>
-  <path d="m313 185-15 24 16 12-12 32" stroke="#dcffe6" stroke-width="1.2" opacity=".7"/>
  </g>
  <path d="M111 303c36 29 173 23 287-27 78-34 119-65 123-90" stroke="#a0ffbd" stroke-width="1.1" opacity=".55"/>
  <path d="M111 303c36 29 173 23 287-27 78-34 119-65 123-90" stroke="#8affb2" stroke-width="3" opacity=".25" filter="url(#soft)"/>
