@@ -37,8 +37,8 @@ function render(view: View) {
     return;
   }
   if (view.kind === "login") {
-    content.append(element("h1", "Willkommen zurück."),
-      element("p", "Melde dich an und behalte deine Zeit im Blick."));
+    content.append(element("h1", "Anmelden"),
+      element("p", "Deine Zeiterfassung bei Anders Consulting."));
     const form = document.createElement("form");
     const email = input("email", "E-Mail-Adresse", "email", "username");
     email.field.value = view.email ?? "";
