@@ -6,6 +6,16 @@ import { createTimeServer } from "../supabase/functions/mcp/tools.ts";
 
 const authId = "11111111-1111-4111-8111-111111111111";
 const requestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+test("MCP liefert eigene Anwesenheitsliste als fertigen Codeblock", async () => {
+  const response = await call("tools/call", { name: "get_my_attendance_list", arguments: { from: "2026-10-01", to: "2026-10-31" } }, async (url, init) => {
+    assert.ok(String(url).endsWith("/rest/v1/rpc/get_my_activity"));
+    assert.deepEqual(JSON.parse(init?.body as string), { p_from: "2026-10-01", p_to: "2026-10-31" });
+    return Response.json({ attendance: [], sickleave: [{ date: "2026-10-01", wholeday: 1 }], vacation: [] });
+  });
+  assert.match(response.result.content[0].text, /^```text\n/);
+  assert.match(response.result.content[0].text, /DO\.\s*\| 01\.10\.2026\s*\| KRANK/);
+  assert.match(response.result.content[0].text, /\n```$/);
+});
 async function call(method: string, params: unknown, fetcher: typeof fetch = async () => { throw new Error("Unexpected database request"); }) {
   const db = createClient("https://project.test", "public-key", {
     auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: fetcher },
@@ -22,9 +32,9 @@ async function call(method: string, params: unknown, fetcher: typeof fetch = asy
   } finally { await handler.close(); }
 }
 
-test("MCP bietet 11 klar annotierte Werkzeuge ohne frei wählbare Benutzer-ID", async () => {
+test("MCP bietet 12 klar annotierte Werkzeuge ohne frei wählbare Benutzer-ID", async () => {
   const response = await call("tools/list", {});
-  assert.equal(response.result.tools.length, 11);
+  assert.equal(response.result.tools.length, 12);
   for (const tool of response.result.tools) {
     assert.equal(tool.inputSchema.properties.user, undefined);
     assert.equal(tool.inputSchema.additionalProperties, false);

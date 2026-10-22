@@ -48,3 +48,6 @@ verify_jwt = true
 [functions.mcp]
 # OAuth discovery must be public. The handler authenticates every tool request.
 verify_jwt = false
+
+[functions.get_my_attendance_list]
+verify_jwt = true

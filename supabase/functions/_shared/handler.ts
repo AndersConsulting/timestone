@@ -1,8 +1,11 @@
+import { formatAttendanceList } from "./attendance-report.ts";
+
 export const functionNames = [
   "log_attendance_without_break", "log_attendance_with_break",
   "log_sickleave_single_day", "log_sickleave_multiday",
   "log_vacation_single_day", "log_vacation_multiday",
   "log_attendance_clockin",
+  "get_my_attendance_list",
 ] as const;
 export type FunctionName = typeof functionNames[number];
 
@@ -37,6 +40,14 @@ function timestamp(value: unknown, field: string): string {
 export function parameters(name: FunctionName, input: unknown): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new InputError("JSON-Objekt erforderlich.");
   const body = input as Record<string, unknown>;
+  if (name === "get_my_attendance_list") {
+    if (Object.keys(body).some(key => key !== "from" && key !== "to")) throw new InputError("Nur from und to erforderlich.");
+    const from = date(body.from, "from");
+    const to = date(body.to, "to");
+    const days = (Date.parse(to) - Date.parse(from)) / 86400000;
+    if (days < 0 || days > 365) throw new InputError("Zeitraum muss 1 bis 366 Kalendertage umfassen.");
+    return { p_from: from, p_to: to };
+  }
   if (!Number.isInteger(body.user) || (body.user as number) < 1 || (body.user as number) > 2147483647) {
     throw new InputError("user muss eine positive Integer-ID sein.");
   }
@@ -99,7 +110,8 @@ export function createHandler(name: FunctionName, dependencies: Dependencies) {
       // Check current Auth user, then forward the caller JWT so Postgres enforces RLS.
       const auth = await requestFetch(`${dependencies.url}/auth/v1/user`, { headers });
       if (!auth.ok) return json(auth.status >= 500 ? 502 : 401, { error: "Anmeldung konnte nicht bestätigt werden." });
-      const response = await requestFetch(`${dependencies.url}/rest/v1/rpc/${name}`, {
+      const rpcName = name === "get_my_attendance_list" ? "get_my_activity" : name;
+      const response = await requestFetch(`${dependencies.url}/rest/v1/rpc/${rpcName}`, {
         method: "POST", headers, body: JSON.stringify(args),
       });
       const data = await response.json();
@@ -113,6 +125,9 @@ export function createHandler(name: FunctionName, dependencies: Dependencies) {
         }
         if (response.status === 401) return json(401, { error: "Anmeldung abgelaufen." });
         return json(502, { error: "Datenbankanfrage fehlgeschlagen." });
+      }
+      if (name === "get_my_attendance_list") {
+        return json(200, { text: formatAttendanceList(data, args.p_from as string, args.p_to as string) });
       }
       return json(201, { data });
     } catch (error) {

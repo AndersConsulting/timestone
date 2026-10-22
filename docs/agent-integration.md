@@ -13,6 +13,7 @@ Das ist die Timestone-Anwendungsschnittstelle, nicht der administrative Supabase
 | Werkzeug | Zweck |
 | --- | --- |
 | `get_me` | Eigenes Profil, aktuelle Serverzeit und Zeitzone |
+| `get_my_attendance_list` | Eigene Anwesenheit, Krankheit und Urlaub als fertige ASCII-Tabelle für den Chat (`from`, `to`) |
 | `get_my_activity` | Eigene Buchungen, Krankheit und Urlaub in einem Datumsbereich |
 | `get_attendance_summary` | Brutto-/Pausen-/Nettozeit für sich selbst und gegebenenfalls direktes Team |
 | `clock_in` / `clock_out` | Explizite, getrennte Stempelaktionen mit Serverzeit |
@@ -23,7 +24,7 @@ Das ist die Timestone-Anwendungsschnittstelle, nicht der administrative Supabase
 
 Alle Schreibwerkzeuge verlangen eine UUID `request_id`. Je neuer Absicht eine neue UUID; bei Wiederholung nach Netzwerkfehlern dieselbe UUID mit identischen Argumenten senden. Der RPC `agent_execute` speichert Aktion und Ergebnis atomar. Ein wiederholtes `clock_in` mit gleicher ID liefert das erste Ergebnis; eine neue `clock_in`-ID bei bereits offener Buchung wird abgewiesen und stempelt nicht aus. Die klassische REST-Funktion `log_attendance_clockin` bleibt ein Toggle und soll von Agenten nicht blind wiederholt werden.
 
-Schreibwerkzeuge haben kein frei wählbares `user`-Feld. Vorgesetzte dürfen Teamzeiten nur lesen. Das Backend übernimmt die Pausenberechnung beim Schließen einer Stempelbuchung.
+Schreibwerkzeuge haben kein frei wählbares `user`-Feld. Vorgesetzte dürfen Teamzeiten nur lesen. Das Backend übernimmt die Pausenberechnung beim Schließen einer Stempelbuchung. Offene Stempelbuchungen werden am Tagesende um 00:00 Europe/Berlin geschlossen (`auto_closed = true`); der nächste Tag beginnt mit neuem Clock-in.
 
 ## Copilot in VS Code: Test mit Benutzer-Token
 
@@ -44,7 +45,7 @@ Prüfstand am 22.10.2026: MCP-Discovery liefert HTTP 200 und der geschützte MCP
 3. Einen passenden OAuth-Client registrieren oder Dynamic Client Registration aktivieren; die vom Client angezeigte Redirect-URI verwenden.
 4. Den oben genannten MCP-Endpunkt in ChatGPT als eigene MCP-Verbindung mit OAuth hinzufügen und sich als Mitarbeiter anmelden. Die verfügbaren Möglichkeiten hängen vom ChatGPT-Workspace ab.
 
-Der OAuth-Anmeldefluss ist separat zu testen, bevor eine unbeaufsichtigte Automation aktiviert wird. Im Repository ist keine automatische Ausführung nach Zeitplan eingerichtet und kein persönliches ChatGPT-/Copilot-Konto verbunden.
+Der OAuth-Anmeldefluss ist separat zu testen, bevor eine unbeaufsichtigte Automation aktiviert wird. Der automatische Tagesabschluss läuft unabhängig von ChatGPT/Copilot als Datenbank-Cron. Ein persönliches ChatGPT-/Copilot-Konto oder eine agentische Hintergrundautomatisierung ist noch nicht verbunden.
 
 Quellen: [Supabase OAuth-Einrichtung](https://supabase.com/docs/guides/auth/oauth-server/getting-started), [Supabase MCP-Authentifizierung](https://supabase.com/docs/guides/auth/oauth-server/mcp-authentication), [OpenAI MCP-Authentifizierung](https://developers.openai.com/plugins/build/auth), [Eigene MCP-Verbindung in ChatGPT](https://developers.openai.com/api/docs/guides/custom-mcp-server).
 
@@ -56,4 +57,4 @@ Quellen: [Supabase OAuth-Einrichtung](https://supabase.com/docs/guides/auth/oaut
 4. Neue `request_id` erzeugen und das passende Schreibwerkzeug aufrufen. Für technische Retries dieselbe ID beibehalten.
 5. Ergebnis und gegebenenfalls Auswertung lesen; Konflikte klären, statt mit neuen IDs weitere Schreibversuche auszulösen.
 
-Beispielbefehle nach erfolgreicher Verbindung: „Stemple mich ein“, „Stemple mich aus“, „Trage für nächsten Montag einen halben Urlaubstag ein“, „Wie viele Stunden habe ich diese Woche gearbeitet?“. Urlaub und Krankheit sind die aktuelle Planungsgrundlage; geplante Arbeitsschichten kommen später.
+Beispielbefehle nach erfolgreicher Verbindung: „Stemple mich ein“, „Stemple mich aus“, „Trage für nächsten Montag einen halben Urlaubstag ein“, „Wie viele Stunden habe ich diese Woche gearbeitet?“, „Zeige meine Anwesenheiten dieser Woche als Tabelle“. Für die letzte Anfrage `get_my_attendance_list` mit dem aufgelösten Datumsbereich verwenden und den zurückgegebenen Codeblock unverändert anzeigen. Urlaub und Krankheit sind die aktuelle Planungsgrundlage; geplante Arbeitsschichten kommen später.

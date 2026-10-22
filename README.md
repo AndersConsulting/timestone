@@ -9,7 +9,7 @@ Tabellen und Spalten verwenden PostgreSQL-übliche Kleinschreibung. Die fachlich
 | Tabelle | Spalten |
 | --- | --- |
 | `users` | `id` (Integer, automatisch), `card_id` (UUID, eindeutig, automatisch vorbelegt), `fullname`, `email` (ohne Beachtung der Groß-/Kleinschreibung eindeutig), `vorgesetzter` (optionaler Verweis auf `users.id`), `auth_user_id` (optionaler, eindeutiger Verweis auf Supabase Auth) |
-| `anwesenheit` | `id`, `user_id`, `start_at`, `end_at`, `start_break`, `end_break`, `is_clock_entry` |
+| `anwesenheit` | `id`, `user_id`, `start_at`, `end_at`, `start_break`, `end_break`, `is_clock_entry`, `auto_closed` |
 | `krankheit` | `id`, `user_id`, `date`, `wholeday` |
 | `urlaube` | `id`, `user_id`, `date`, `wholeday`, `is_approved` |
 
@@ -36,6 +36,7 @@ Der Access Token stammt aus einer Supabase-Auth-Anmeldung. API-Schlüssel oder C
 | `log_attendance_without_break` | `user`, `start`, `end` |
 | `log_attendance_with_break` | `user`, `start`, `end`, `startBreak`, `endBreak` |
 | `log_attendance_clockin` | `user` |
+| `get_my_attendance_list` | `from`, `to` (nur eigene Daten, keine Benutzer-ID) |
 | `log_sickleave_single_day` | `user`, `date`, optional `wholeday` |
 | `log_sickleave_multiday` | `user`, `from`, `to`, optional `wholeday` |
 | `log_vacation_single_day` | `user`, `date`, optional `wholeday` |
@@ -65,7 +66,9 @@ Die Antwort enthält zusätzlich `data.attendance` mit dem Datensatz. Beim Ausst
 
 Sonst bleiben `start_break` und `end_break` `null`. Genau sieben Stunden erzeugen keine Pause; ein Beginn nach 12:30 ebenfalls nicht. Beispiel: 08:00–17:00 → 9 h brutto, 1 h Pause, 8 h netto. 13:00–21:00 → 8 h brutto/netto ohne automatische Pause. Offene Buchungen haben noch keine Pause. Stempelbuchungen sind durch `is_clock_entry = true` gekennzeichnet. Manuell vollständig erfasste Arbeitstage behalten ihre explizite Pause.
 
-Eine offene Buchung eines früheren Tages wird mit HTTP `409` gemeldet und muss zunächst durch einen Administrator korrigiert werden. Es erfolgt kein automatisches Ausstempeln über Mitternacht. Ein neuer Tag mit bereits geschlossener Vortagsbuchung beginnt wieder mit Clock-in.
+Offene Buchungen werden am Tagesende um **00:00 Uhr Europe/Berlin** geschlossen (`auto_closed = true`). Die normale Pausenregel gilt auch dabei. Der Cron-Job `timestone-midnight-close` prüft jede Minute auf offene Vortage. So bleibt die Ausführung unabhängig von Sommer-/Winterzeit. Die gespeicherte Endzeit ist immer die unmittelbar auf den Starttag folgende Mitternacht, auch wenn der Scheduler verspätet läuft oder nach einem Ausfall nachholt. Die tatsächliche Verarbeitung kann um die Scheduler-Latenz verzögert sein.
+
+Ein neuer Tag beginnt wieder mit Clock-in. Falls der Scheduler noch nicht gelaufen ist, schließt der erste Scan die eigene alte Buchung um Mitternacht und eröffnet den heutigen Eintrag. Auch ein direkter Clock-out nach Tagesende wird auf Mitternacht begrenzt. Vollständig manuell erfasste Schichten behalten ihr angegebenes Ende.
 
 Die Entscheidung über Ein- oder Ausstempeln wird pro Benutzer innerhalb einer Datenbanktransaktion serialisiert. Jeder erfolgreiche Aufruf ist eine neue Stempelaktion: Clients sollten den Button während einer Anfrage sperren und bei unklarem Netzwerkstatus den gespeicherten Zustand prüfen, bevor sie erneut aufrufen.
 
@@ -111,16 +114,35 @@ Beide Grenzen sind eingeschlossen. Es entsteht ein Datensatz pro **Kalendertag**
 
 Urlaubsfreigaben und Korrekturen sind noch keine öffentlichen Funktionen. `isApproved`/`is_approved` werden als Request-Felder abgewiesen. Verwaltung erfolgt vorerst durch berechtigte Administratoren im Supabase-Dashboard.
 
+### Eigene Anwesenheitsliste im Chat
+
+`get_my_attendance_list` liest ausschließlich Daten des angemeldeten Benutzers. Auch Vorgesetzte erhalten hier nur ihre eigene Liste. Beispiel-Request:
+
+```json
+{"from": "2027-01-18", "to": "2027-01-24"}
+```
+
+Antwort: HTTP `200`, `{ "text": "..." }`. Das MCP-Werkzeug gleichen Namens liefert die Tabelle direkt als Markdown-Codeblock. Zeitraum inklusive beider Grenzen, maximal 366 Tage. Beispiel mit erfundenen Daten:
+
+```text
+TAG | DATUM      | Von - Bis     | Pause         | Stunden
+MO. | 18.01.2027 | 09:30 - 17:30 | 12:30 - 13:30 |    7,00
+DI. | 19.01.2027 | 09:30 - 17:30 | 12:30 - 13:30 |    7,00
+MI. | 20.01.2027 | KRANK         | --            |    0,00
+```
+
+Die Ausgabe enthält eine Netto-Summe. Automatisch geschlossene Zeiten tragen `*` und zeigen `24:00` als Tagesende; offene Einträge zeigen `OFFEN` und zählen noch nicht mit. Halbe Abwesenheitstage und beantragter/genehmigter Urlaub sind erkennbar. Tage ohne Einträge werden ausgelassen. Mehrere Einträge eines Tages stehen in eigenen Zeilen. Stunden basieren auf den gespeicherten Sekunden, auch über Zeitumstellungen; die Summe wird erst am Ende gerundet.
+
 ### Antworten
 
-Erfolg: HTTP `201`, `{ "data": ... }`. Vollständige Anwesenheit liefert einen Datensatz; Abwesenheit liefert ein Array von Tagesdatensätzen. Die Stempelfunktion liefert `{ "data": { "action": "clock_in" | "clock_out", "attendance": { ... } } }`.
+Schreiberfolg: HTTP `201`, `{ "data": ... }`. Vollständige Anwesenheit liefert einen Datensatz; Abwesenheit liefert ein Array von Tagesdatensätzen. Die Stempelfunktion liefert `{ "data": { "action": "clock_in" | "clock_out", "attendance": { ... } } }`.
 
 | Status | Bedeutung |
 | --- | --- |
 | `400` | Ungültige Eingaben oder ungültiger Zeitraum/Pause |
 | `401` | Keine gültige Anmeldung |
 | `403` | Keine Berechtigung für den angegebenen Benutzer |
-| `409` | Doppelter/überlappender Eintrag, bereits abgeschlossener Tag oder offene Buchung eines früheren Tages; bestehende Daten bleiben erhalten |
+| `409` | Doppelter/überlappender Eintrag, bereits abgeschlossener Tag oder Konflikt bei einer Stempelaktion; bestehende Daten bleiben erhalten |
 | `405` / `415` / `413` | Falsche Methode / falscher Content-Type / zu große Anfrage |
 | `500` / `502` | Konfigurationsfehler / Auth- oder Datenbankdienst nicht verfügbar |
 
@@ -146,7 +168,7 @@ npm ci
 npm run check
 ```
 
-Tests führen die echte Migration und RPCs in PGlite (PostgreSQL/WASM) aus, mit nachgebildeten Supabase-Auth-Rollen. Sie prüfen Datenbank-Constraints, RLS, Sommer-/Winterzeit und Transaktionen. HTTP-Tests prüfen die gemeinsame Edge-Logik mit simulierten Auth-/REST-Antworten. Dafür sind weder Docker noch Zugangsdaten nötig. Ein vollständiger lokaler Supabase-Stack benötigt zusätzlich Docker und die Supabase CLI.
+Tests führen die Datenmigrationen und RPCs in PGlite (PostgreSQL/WASM) aus, mit nachgebildeten Supabase-Auth-Rollen. Sie prüfen Datenbank-Constraints, RLS, Sommer-/Winterzeit und Transaktionen. HTTP-Tests prüfen die gemeinsame Edge-Logik mit simulierten Auth-/REST-Antworten. Dafür sind weder Docker noch Zugangsdaten nötig. Die separate Cron-Migration wird in PGlite ausgelassen, da dort keine Hintergrundprozesse/pg_cron verfügbar sind. Den aktiven Zeitplan und tatsächliche Job-Läufe auf Supabase prüfen. Ein vollständiger lokaler Supabase-Stack benötigt zusätzlich Docker und die Supabase CLI.
 
 ```sh
 supabase start
@@ -164,7 +186,7 @@ supabase db push
 supabase functions deploy
 ```
 
-`verify_jwt = true` ist für alle sieben REST-Funktionen konfiguriert. Bei `mcp` ist der Gateway-Check aus, damit OAuth-Discovery erreichbar ist; `withSupabase({ auth: 'user' })` authentifiziert jeden MCP-Aufruf. Die Migrationen unter `supabase/migrations/` sind die Grundlage für weitere Umgebungen.
+`verify_jwt = true` ist für alle acht REST-Funktionen konfiguriert. Bei `mcp` ist der Gateway-Check aus, damit OAuth-Discovery erreichbar ist; `withSupabase({ auth: 'user' })` authentifiziert jeden MCP-Aufruf. Die Migrationen unter `supabase/migrations/` sind die Grundlage für weitere Umgebungen.
 
 ## Auswertung: Wer hat wie viel gearbeitet?
 
@@ -188,8 +210,24 @@ Die Views verwenden `security_invoker = true`: Über den Data API-Zugang sehen M
 
 ## Agentisches Gerüst
 
-Der MCP-Endpunkt bietet 11 Werkzeuge für Profil, Auswertung, eigene Buchungen sowie Krankheit und Urlaub. Alle Schreibwerkzeuge lösen die Identität aus der Anmeldung auf und verlangen `request_id` zur Wiederholungssicherheit. Erfolgreiche Agentenaktionen werden mit Ergebnis in `timestone_private.agent_requests` protokolliert. Unterschiedliche Argumente mit derselben ID werden abgewiesen. Fehlgeschlagene Aktionen hinterlassen weder Teilbuchungen noch Erfolgsbelege.
+Der MCP-Endpunkt bietet 12 Werkzeuge für Profil, Auswertung, eigene Buchungen sowie Krankheit und Urlaub. Alle Schreibwerkzeuge lösen die Identität aus der Anmeldung auf und verlangen `request_id` zur Wiederholungssicherheit. Erfolgreiche Agentenaktionen werden mit Ergebnis in `timestone_private.agent_requests` protokolliert. Unterschiedliche Argumente mit derselben ID werden abgewiesen. Fehlgeschlagene Aktionen hinterlassen weder Teilbuchungen noch Erfolgsbelege.
 
-Urlaub und Krankheit können mit Datumsbereichen geplant werden. Künftige Arbeitsschichten sind noch kein Planungsobjekt; der Agenten-RPC lehnt zukünftige Anwesenheitszeiten ab. Es gibt keine gestartete Hintergrundautomatisierung. Für echte automatische Buchungen braucht der Agent verlässliche Ereignisse und einen autorisierten Ablauf; Kalendertermine allein belegen keine tatsächliche Arbeitszeit.
+Urlaub und Krankheit können mit Datumsbereichen geplant werden. Künftige Arbeitsschichten sind noch kein Planungsobjekt; der Agenten-RPC lehnt zukünftige Anwesenheitszeiten ab. Der Tagesabschluss läuft per Datenbank-Cron. Eine agentische Hintergrundautomatisierung für neue Anwesenheitsbuchungen ist noch nicht eingerichtet. Für echte automatische Buchungen braucht der Agent verlässliche Ereignisse und einen autorisierten Ablauf; Kalendertermine allein belegen keine tatsächliche Arbeitszeit.
 
 Einrichtung für Copilot und ChatGPT sowie der verbleibende OAuth-Anmeldeschritt: [docs/agent-integration.md](docs/agent-integration.md).
+
+## Tagesabschluss überwachen
+
+Im Supabase-Dashboard unter Cron den Job `timestone-midnight-close` öffnen oder als Administrator abfragen:
+
+```sql
+select jobid, jobname, schedule, active from cron.job
+where jobname = 'timestone-midnight-close';
+
+select status, return_message, start_time, end_time
+from cron.job_run_details
+where jobid = (select jobid from cron.job where jobname = 'timestone-midnight-close')
+order by start_time desc limit 20;
+```
+
+Die private Funktion `timestone_private.close_open_attendance()` ist für normale Benutzer und den Service-Role-Zugang nicht aufrufbar. Der Cron-Job läuft als Datenbankadministrator und schließt alle noch offenen Vortagsbuchungen. Abgeschlossene Buchungen bleiben unverändert. [Supabase-Cron-Dokumentation](https://supabase.com/docs/guides/cron/quickstart).

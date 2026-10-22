@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
+import { formatAttendanceList } from "../_shared/attendance-report.ts";
 
 const requestId = z.uuid().describe("Neue UUID je beabsichtigter Aktion; bei Retry dieselbe UUID und dieselben Argumente verwenden.");
 const timestamp = z.iso.datetime({ offset: true }).describe("Tatsächlicher Zeitpunkt mit Zeitzone, z.B. 2026-10-22T08:00:00+02:00.");
@@ -12,8 +13,8 @@ const security = { securitySchemes: [{ type: "oauth2", scopes: [] }] };
 const result = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }] });
 
 export function createTimeServer(db: SupabaseClient, authUserId: string) {
-  const server = new McpServer({ name: "timestone", version: "0.2.0" }, {
-    instructions: "Zeitzone Europe/Berlin. Vor relativen Angaben get_me verwenden, vor Änderungen den aktuellen Zustand lesen. Nur eigene Daten schreiben. clock_in und clock_out sind explizite Aktionen; nie die Toggle-Funktion blind wiederholen. Je Aktion eine request_id erzeugen und bei Retry unverändert wiederverwenden. Keine tatsächlichen Arbeitszeiten aus Kalenderterminen oder Plänen erfinden. Nach unklarer Eingabe fehlende Zeiten klären. Automatische Pause bei Stempelbuchungen: mehr als 7 Stunden Bruttozeit, Beginn spätestens 12:30 und Ende frühestens 13:30; dann 12:30–13:30, sonst keine. Urlaube starten ungenehmigt. Mehrtagesbereiche enthalten alle Kalendertage. Offene Zeiten zählen nicht als bestätigte Arbeit. Planung umfasst derzeit Urlaub und Krankheit, keine geplanten Arbeitsschichten.",
+  const server = new McpServer({ name: "timestone", version: "0.3.0" }, {
+    instructions: "Zeitzone Europe/Berlin. Vor relativen Angaben get_me verwenden, vor Änderungen den aktuellen Zustand lesen. Nur eigene Daten schreiben. clock_in und clock_out sind explizite Aktionen; nie die Toggle-Funktion blind wiederholen. Je Aktion eine request_id erzeugen und bei Retry unverändert wiederverwenden. Keine tatsächlichen Arbeitszeiten aus Kalenderterminen oder Plänen erfinden. Nach unklarer Eingabe fehlende Zeiten klären. Automatische Pause bei Stempelbuchungen: mehr als 7 Stunden Bruttozeit, Beginn spätestens 12:30 und Ende frühestens 13:30; dann 12:30–13:30, sonst keine. Urlaube starten ungenehmigt. Mehrtagesbereiche enthalten alle Kalendertage. Offene Stempelbuchungen werden am Tagesende um 00:00 Europe/Berlin automatisch geschlossen und als auto_closed markiert. Offene Zeiten zählen nicht als bestätigte Arbeit. Für Listen im Chat get_my_attendance_list verwenden und den Codeblock unverändert ausgeben. Planung umfasst derzeit Urlaub und Krankheit, keine geplanten Arbeitsschichten.",
   });
   async function rpc(name: string, args: Record<string, unknown>) {
     const { data, error } = await db.rpc(name, args);
@@ -38,6 +39,14 @@ export function createTimeServer(db: SupabaseClient, authUserId: string) {
     description: "Brutto-, Pausen- und Nettoarbeitszeit je sichtbarer Person im Zeitraum. Vorgesetzte sehen zusätzlich ihr direktes Team. Offene Buchungen separat, nicht als bestätigte Arbeitszeit. Maximal 366 Tage.",
     inputSchema: z.strictObject(range), annotations: read, _meta: security,
   }, ({ from, to }) => rpc("get_attendance_summary", { p_from: from, p_to: to }));
+  server.registerTool("get_my_attendance_list", {
+    description: "Eigene Anwesenheiten, Krankheit und Urlaub als fertige ASCII-Tabelle fuer den Chat. Tabelle als Codeblock unveraendert anzeigen. Mit Netto-Stunden, Summe, offenen und automatisch um Mitternacht geschlossenen Buchungen. Maximal 366 Kalendertage, inklusive from/to.",
+    inputSchema: z.strictObject(range), annotations: read, _meta: security,
+  }, async ({ from, to }) => {
+    const { data, error } = await db.rpc("get_my_activity", { p_from: from, p_to: to });
+    if (error) return { ...result({ error: error.message, code: error.code }), isError: true };
+    return { content: [{ type: "text" as const, text: "```text\n" + formatAttendanceList(data, from, to) + "\n```" }] };
+  });
   for (const operation of ["clock_in", "clock_out"] as const) {
     server.registerTool(operation, {
       description: operation === "clock_in" ? "Jetzt für sich selbst einstempeln. Verweigert, wenn bereits eingestempelt oder Tag abgeschlossen."

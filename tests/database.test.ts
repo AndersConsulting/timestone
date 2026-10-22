@@ -21,6 +21,8 @@ before(async () => {
   `);
   const migrations = new URL("../supabase/migrations/", import.meta.url);
   for (const file of (await readdir(migrations)).filter(file => file.endsWith(".sql")).sort()) {
+    // PGlite has no background workers / pg_cron. Verify scheduling on Supabase.
+    if (file.endsWith("_schedule_midnight_close.sql")) continue;
     await db.exec(await readFile(new URL(file, migrations), "utf8"));
   }
   await db.query(`insert into public.users(fullname,email,auth_user_id) values ('Alice','alice@example.test',$1),('Bob','bob@example.test',$2)`, [alice, bob]);
@@ -33,6 +35,59 @@ async function asUser<T>(fn: () => Promise<T>, role = "authenticated", id = alic
   try { return await fn(); } finally { await db.exec("rollback"); }
 }
 const rows = async (sql: string) => (await db.query<Record<string, any>>(sql)).rows;
+
+test("Tagesabschluss: exakt Berliner Mitternacht, Nachholen, Pause und wiederholter Lauf", async () => {
+  await db.exec("begin");
+  try {
+    await db.exec(`insert into public.anwesenheit(user_id,start_at,is_clock_entry) values
+      (1,'2026-07-20T08:00:00+02:00',true), (2,'2026-07-21T00:00:00+02:00',true)`);
+    assert.equal((await rows("select timestone_private.close_open_attendance('2026-07-20T23:59:59+02:00') as count"))[0].count, 0);
+    assert.equal((await rows("select timestone_private.close_open_attendance('2026-07-21T00:00:00+02:00') as count"))[0].count, 1);
+    const [entry, current] = await rows("select * from public.anwesenheit order by user_id");
+    assert.equal(entry.end_at.toISOString(), "2026-07-20T22:00:00.000Z");
+    assert.equal(entry.auto_closed, true);
+    assert.equal(entry.start_break.toISOString(), "2026-07-20T10:30:00.000Z");
+    assert.equal(current.end_at, null);
+    assert.equal((await rows("select timestone_private.close_open_attendance('2026-07-21T00:01:00+02:00') as count"))[0].count, 0);
+    assert.equal((await rows("select timestone_private.close_open_attendance('2026-07-24T09:00:00+02:00') as count"))[0].count, 1);
+    const updated = await rows("select * from public.anwesenheit order by user_id");
+    assert.deepEqual(updated[0], entry);
+    assert.equal(updated[1].end_at.toISOString(), "2026-07-21T22:00:00.000Z");
+  } finally { await db.exec("rollback"); }
+});
+test("Tagesabschluss: Sommer-/Winterzeit und später Start ohne Mittagspause", async () => {
+  for (const [start, next, gross, pause] of [
+    ["2026-03-29T00:00:00+01:00", "2026-03-30T00:00:00+02:00", 23, 1],
+    ["2026-10-25T00:00:00+02:00", "2026-10-26T00:00:00+01:00", 25, 1],
+    ["2026-07-20T13:00:00+02:00", "2026-07-21T00:00:00+02:00", 11, 0],
+  ] as const) {
+    await db.exec("begin");
+    try {
+      await db.query("insert into public.anwesenheit(user_id,start_at,is_clock_entry) values(1,$1,true)", [start]);
+      await db.query("select timestone_private.close_open_attendance($1)", [next]);
+      const [summary] = await rows("select * from public.attendance_daily_summary");
+      assert.equal(Number(summary.gross_seconds), gross * 3600);
+      assert.equal(Number(summary.break_seconds), pause * 3600);
+      assert.equal(Number(summary.net_hours), gross - pause);
+    } finally { await db.exec("rollback"); }
+  }
+});
+test("Tagesabschluss: kein Aufruf oder Manipulieren des Markers durch normale Benutzer", async () => {
+  for (const role of ["authenticated", "anon", "service_role"]) {
+    await assert.rejects(asUser(() => db.exec("select timestone_private.close_open_attendance()"), role), (e: any) => e.code === "42501");
+  }
+  await assert.rejects(asUser(() => db.exec("update public.anwesenheit set auto_closed = true")), (e: any) => e.code === "42501");
+});
+test("Direkter Clock-out nach Tagesende wird auf Mitternacht begrenzt", async () => {
+  await asUser(async () => {
+    await db.exec("insert into public.anwesenheit(user_id,start_at,is_clock_entry) values (1,'2026-07-20T22:00:00+02:00',true)");
+    await db.exec("update public.anwesenheit set end_at='2026-07-21T07:00:00+02:00'");
+    const [entry] = await rows("select * from public.anwesenheit");
+    assert.equal(entry.end_at.toISOString(), "2026-07-20T22:00:00.000Z");
+    assert.equal(entry.auto_closed, true);
+    assert.equal(entry.start_break, null);
+  });
+});
 
 test("Standardpause 12:30–13:30 Berlin in Winter- und Sommerzeit", async () => {
   await asUser(async () => {
@@ -147,16 +202,18 @@ test("Stempeln: fremde oder nicht vorhandene Benutzer sowie anon werden abgewies
   await assert.rejects(asUser(() => db.exec("select public.log_attendance_clockin(1)"), "anon"), (e: any) => e.code === "42501");
 });
 
-test("Stempeln: offene Vortagsbuchung wird weder geschlossen noch überschrieben", async () => {
+test("Stempeln: vor dem Cron-Lauf wird gestern um Mitternacht geschlossen und heute neu geöffnet", async () => {
   await asUser(async () => {
     await db.exec(`insert into public.anwesenheit(user_id,start_at,is_clock_entry)
       values (1, (((clock_timestamp() at time zone 'Europe/Berlin')::date - 1) + time '08:00') at time zone 'Europe/Berlin', true)`);
-    await db.exec("savepoint stale");
-    await assert.rejects(db.exec("select public.log_attendance_clockin(1)"), (e: any) => e.code === "PT409");
-    await db.exec("rollback to savepoint stale");
-    const entries = await rows("select * from public.anwesenheit");
-    assert.equal(entries.length, 1);
-    assert.equal(entries[0].end_at, null);
+    const [result] = await rows("select public.log_attendance_clockin(1) as result");
+    assert.equal(result.result.action, "clock_in");
+    const entries = await rows("select *, (end_at at time zone 'Europe/Berlin')::time as local_end from public.anwesenheit order by start_at");
+    assert.equal(entries.length, 2);
+    assert.equal(entries[0].auto_closed, true);
+    assert.equal(entries[0].local_end, "00:00:00");
+    assert.equal(entries[1].end_at, null);
+    assert.equal(entries[1].auto_closed, false);
   });
 });
 

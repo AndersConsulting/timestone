@@ -3,6 +3,23 @@ import assert from "node:assert/strict";
 import { createHandler, parameters, functionNames } from "../supabase/functions/_shared/handler.ts";
 
 const payload = { user: 1, date: "2026-10-20" };
+test("Chat-Liste: Zeitraum validieren, eigenen RPC mit Benutzer-JWT lesen und ASCII liefern", async () => {
+  for (const args of [{ from: "2026-10-02", to: "2026-10-01" }, { from: "2026-02-30", to: "2026-03-02" }, { from: "2026-01-01", to: "2027-12-31" }, { from: "2026-10-01", to: "2026-10-31", user: 2 }]) {
+    assert.throws(() => parameters("get_my_attendance_list", args));
+  }
+  const handler = createHandler("get_my_attendance_list", { url: "https://project.test", key: "public-key", fetch: async (url, init) => {
+    assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer user-jwt");
+    if (String(url).includes("/auth/")) return Response.json({ id: "auth-user" });
+    assert.ok(String(url).endsWith("/rpc/get_my_activity"));
+    assert.deepEqual(JSON.parse(init?.body as string), { p_from: "2026-10-01", p_to: "2026-10-31" });
+    return Response.json({ attendance: [], sickleave: [{ date: "2026-10-01", wholeday: 1 }], vacation: [] });
+  } });
+  const response = await handler(request({ from: "2026-10-01", to: "2026-10-31" }));
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.match(data.text, /KRANK/);
+  assert.match(data.text, /Summe netto: 0,00/);
+});
 function request(body: unknown = payload, token = "user-jwt") {
   return new Request("https://example.test", { method: "POST", headers: {
     "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -10,6 +27,10 @@ function request(body: unknown = payload, token = "user-jwt") {
 }
 test("Alle Endpunkte bilden ihre dokumentierten Parameter ab", () => {
   for (const name of functionNames) {
+    if (name === "get_my_attendance_list") {
+      assert.deepEqual(parameters(name, { from: "2026-10-01", to: "2026-10-31" }), { p_from: "2026-10-01", p_to: "2026-10-31" });
+      continue;
+    }
     const body = name === "log_attendance_clockin" ? { user: 1 } : name.startsWith("log_attendance")
       ? { user: 1, start: "2026-10-20T08:00:00+02:00", end: "2026-10-20T17:00:00+02:00", ...(name.endsWith("_with_break") ? { startBreak: "2026-10-20T12:00:00+02:00", endBreak: "2026-10-20T12:30:00+02:00" } : {}) }
       : name.endsWith("single_day") ? payload : { user: 1, from: "2026-10-20", to: "2026-10-21" };
