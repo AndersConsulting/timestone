@@ -9,6 +9,13 @@
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test"
   },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "@supabase/middleware": "1.0.0",
+    "@supabase/server": "1.9.2",
+    "@supabase/supabase-js": "2.118.0",
+    "zod": "4.6.7"
+  },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.11",
     "@types/node": "26.6.5",

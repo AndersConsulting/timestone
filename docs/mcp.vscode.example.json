@@ -1,0 +1,17 @@
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "timestoneUserToken",
+      "description": "Supabase-Benutzer-Access-Token für Timestone (kein Service-Role-Key)",
+      "password": true
+    }
+  ],
+  "servers": {
+    "timestone": {
+      "type": "http",
+      "url": "https://wbcdfvkezaqfugtgvgql.supabase.co/functions/v1/mcp",
+      "headers": { "Authorization": "Bearer ${input:timestoneUserToken}" }
+    }
+  }
+}

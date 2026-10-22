@@ -44,3 +44,7 @@ verify_jwt = true
 
 [functions.log_attendance_clockin]
 verify_jwt = true
+
+[functions.mcp]
+# OAuth discovery must be public. The handler authenticates every tool request.
+verify_jwt = false

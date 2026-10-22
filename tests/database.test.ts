@@ -184,9 +184,14 @@ test("Update-Rechte erlauben nur das Schließen eigener offener Stempelbuchungen
   }
 });
 
-test("Stempelbuchungen dürfen keine Pause erhalten; vollständige Buchungen benötigen weiterhin Endzeit", async () => {
-  await assert.rejects(asUser(() => db.exec(`insert into public.anwesenheit(user_id,start_at,start_break,end_break,is_clock_entry)
-    values (1,'2026-10-20T08:00:00Z','2026-10-20T12:00:00Z','2026-10-20T13:00:00Z',true)`)), (e: any) => e.code === "23514");
+test("Offene Stempelbuchungen haben keine Pause; vollständige Buchungen benötigen weiterhin Endzeit", async () => {
+  await asUser(async () => {
+    await db.exec(`insert into public.anwesenheit(user_id,start_at,start_break,end_break,is_clock_entry)
+      values (1,'2026-10-20T08:00:00Z','2026-10-20T12:00:00Z','2026-10-20T13:00:00Z',true)`);
+    const [entry] = await rows("select * from public.anwesenheit");
+    assert.equal(entry.start_break, null);
+    assert.equal(entry.end_break, null);
+  });
   await assert.rejects(asUser(() => db.exec("select public.log_attendance_with_break(1,'2026-10-20T08:00:00Z',null,'2026-10-20T12:00:00Z','2026-10-20T13:00:00Z')")), (e: any) => e.code === "23514");
 });
 
@@ -218,4 +223,109 @@ test("Direktes Update kann keine fremde offene Buchung schließen", async () => 
     await db.exec("set local role authenticated");
     assert.equal((await rows("update public.anwesenheit set end_at = clock_timestamp() where user_id = 2 returning id")).length, 0);
   }, "service_role");
+});
+
+test("Automatische Pause: strikte 7h-Grenze, 12:30-Grenze, vollständige Pause und Sommer-/Winterzeit", async () => {
+  for (const [start, end, expected] of [
+    ["2026-07-20T07:00:00+02:00", "2026-07-20T14:00:00+02:00", null],
+    ["2026-07-20T07:00:00+02:00", "2026-07-20T14:00:01+02:00", "2026-07-20T10:30:00.000Z"],
+    ["2026-07-20T12:30:00+02:00", "2026-07-20T20:00:00+02:00", "2026-07-20T10:30:00.000Z"],
+    ["2026-07-20T12:30:01+02:00", "2026-07-20T21:00:00+02:00", null],
+    ["2026-07-20T05:00:00+02:00", "2026-07-20T12:31:00+02:00", null],
+    ["2026-01-20T08:00:00+01:00", "2026-01-20T17:00:00+01:00", "2026-01-20T11:30:00.000Z"],
+  ]) {
+    await asUser(async () => {
+      await db.query("insert into public.anwesenheit(user_id,start_at,end_at,is_clock_entry) values (1,$1,$2,true)", [start, end]);
+      const [entry] = await rows("select * from public.anwesenheit");
+      assert.equal(entry.start_break?.toISOString() ?? null, expected);
+      if (expected) assert.equal(entry.end_break - entry.start_break, 3600000);
+      else assert.equal(entry.end_break, null);
+    });
+  }
+});
+
+test("Pause wird beim Schließen einer offenen Buchung automatisch berechnet", async () => {
+  await asUser(async () => {
+    await db.exec("insert into public.anwesenheit(user_id,start_at,is_clock_entry) values(1,'2026-07-20T08:00:00+02:00',true)");
+    await db.exec("update public.anwesenheit set end_at = '2026-07-20T17:00:00+02:00'");
+    const [entry] = await rows("select * from public.anwesenheit");
+    assert.equal(entry.start_break.toISOString(), "2026-07-20T10:30:00.000Z");
+    const [day] = await rows("select * from public.attendance_daily_summary");
+    assert.equal(Number(day.gross_seconds), 9 * 3600);
+    assert.equal(Number(day.break_seconds), 3600);
+    assert.equal(Number(day.net_hours), 8);
+  });
+});
+
+test("Auswertung zählt offene Buchungen nicht als bestätigte Arbeitszeit", async () => {
+  await asUser(async () => {
+    await db.exec("select public.log_attendance_clockin(1)");
+    const [summary] = await rows("select * from public.attendance_totals");
+    assert.equal(Number(summary.net_hours), 0);
+    assert.equal(Number(summary.open_entries), 1);
+  });
+});
+
+test("Team-Auswertung: direkte Mitarbeiter sichtbar, keine Enkelteams und keine fremden Schreibrechte", async () => {
+  await asUser(async () => {
+    await db.exec("update public.users set vorgesetzter = 1 where id = 2");
+    const [grandchild] = await rows("insert into public.users(fullname,email,vorgesetzter) values('Grandchild','grandchild@example.test',2) returning id");
+    const [empty] = await rows("insert into public.users(fullname,email,vorgesetzter) values('No entries','empty@example.test',1) returning id");
+    for (const user of [1, 2, grandchild.id]) {
+      await db.query("insert into public.anwesenheit(user_id,start_at,end_at,is_clock_entry) values($1,'2026-07-20T08:00:00+02:00','2026-07-20T17:00:00+02:00',true)", [user]);
+    }
+    await db.exec("set local role authenticated");
+    const summary = await rows("select * from public.attendance_totals order by user_id");
+    assert.deepEqual(summary.map(row => row.user_id), [1, 2, empty.id]);
+    assert.deepEqual(summary.map(row => Number(row.net_hours)), [8, 8, 0]);
+    const [period] = await rows("select public.get_attendance_summary('2026-07-20','2026-07-20') as result");
+    assert.deepEqual(period.result.employees.map((row: any) => row.user_id), [1, 2, empty.id]);
+    const [activity] = await rows("select public.get_my_activity('2026-07-20','2026-07-20') as result");
+    assert.equal(activity.result.attendance.length, 1);
+    assert.equal(activity.result.attendance[0].user_id, 1);
+    assert.equal((await rows("update public.anwesenheit set end_at = clock_timestamp() where user_id = 2 returning id")).length, 0);
+    await db.exec("savepoint forbidden");
+    await assert.rejects(db.exec("select public.log_sickleave_single_day(2,'2026-10-22')"), (e: any) => e.code === "42501");
+    await db.exec("rollback to savepoint forbidden");
+    await db.query("select set_config('request.jwt.claim.sub',$1,true)", [bob]);
+    assert.deepEqual((await rows("select user_id from public.attendance_totals order by user_id")).map(r => r.user_id), [2, grandchild.id]);
+  }, "service_role");
+  await assert.rejects(asUser(() => db.exec("select * from public.attendance_totals"), "anon"), (e: any) => e.code === "42501");
+});
+
+test("Agenten-Retry ist idempotent und explizites Clock-in kann nicht ausstempeln", async () => {
+  await asUser(async () => {
+    const args = ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "clock_in", {}];
+    const first = (await db.query("select public.agent_execute($1,$2,$3) as result", args)).rows;
+    const replay = (await db.query("select public.agent_execute($1,$2,$3) as result", args)).rows;
+    assert.deepEqual(replay, first);
+    assert.equal((await rows("select * from public.anwesenheit"))[0].end_at, null);
+    await db.exec("savepoint duplicate_action");
+    await assert.rejects(db.exec("select public.agent_execute('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','clock_in','{}')"), (e: any) => e.code === "PT409");
+    await db.exec("rollback to savepoint duplicate_action");
+    assert.equal((await rows("select * from public.anwesenheit"))[0].end_at, null);
+    const [end] = await rows("select public.agent_execute('cccccccc-cccc-4ccc-8ccc-cccccccccccc','clock_out','{}') as result");
+    assert.equal(end.result.action, "clock_out");
+    assert.equal((await rows("select * from timestone_private.agent_requests")).length, 2);
+  });
+});
+
+test("Agenten können keine fremde Identität, neue Payload unter alter ID oder zukünftige Arbeitszeit speichern", async () => {
+  await asUser(async () => {
+    await db.exec(`select public.agent_execute('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','log_vacation_single_day','{"date":"2027-01-04"}')`);
+    const [vacation] = await rows("select * from public.urlaube");
+    assert.equal(vacation.user_id, 1);
+    assert.equal(vacation.is_approved, false);
+    for (const sql of [
+      `select public.agent_execute('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','log_vacation_single_day','{"date":"2027-01-05"}')`,
+      `select public.agent_execute('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','log_vacation_single_day','{"date":"2027-01-05","user":2}')`,
+      `select public.agent_execute('cccccccc-cccc-4ccc-8ccc-cccccccccccc','log_attendance_without_break',jsonb_build_object('start',clock_timestamp() + interval '1 day','end',clock_timestamp() + interval '2 days'))`,
+    ]) {
+      await db.exec("savepoint invalid_agent");
+      await assert.rejects(db.exec(sql));
+      await db.exec("rollback to savepoint invalid_agent");
+    }
+    assert.equal((await rows("select * from public.urlaube")).length, 1);
+    assert.equal((await rows("select * from timestone_private.agent_requests")).length, 1);
+  });
 });

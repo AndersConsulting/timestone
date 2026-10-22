@@ -1,6 +1,6 @@
 # Timestone
 
-Supabase-Backend für Anwesenheit, Krankheit und Urlaub. Speichert vollständige Arbeitstage und Abwesenheiten sowie Ein- und Ausstempelzeiten über eine separate Funktion. Keine Oberfläche.
+Supabase-Backend für Anwesenheit, Krankheit und Urlaub mit MCP-Schnittstelle für Assistenten. Speichert vollständige Arbeitstage, Stempelzeiten und Abwesenheiten; zwei Datenbank-Views zeigen die geleisteten Zeiten. Keine Weboberfläche.
 
 ## Datenmodell
 
@@ -29,7 +29,7 @@ apikey: <SUPABASE_PUBLISHABLE_KEY>
 Content-Type: application/json
 ```
 
-Der Access Token stammt aus einer Supabase-Auth-Anmeldung. API-Schlüssel oder CardID ersetzen diesen Login nicht. Funktionen prüfen den Benutzer über Auth und geben seinen JWT an die Datenbank weiter. RLS erlaubt nur das Lesen und Erfassen eigener Daten. Vorgesetzte erhalten in dieser Version keine zusätzlichen Rechte; die Beziehung wird zunächst nur gespeichert.
+Der Access Token stammt aus einer Supabase-Auth-Anmeldung. API-Schlüssel oder CardID ersetzen diesen Login nicht. Funktionen prüfen den Benutzer über Auth und geben seinen JWT an die Datenbank weiter. RLS erlaubt nur das Erfassen eigener Daten. Vorgesetzte können zusätzlich Profile und Anwesenheit ihres direkten Teams lesen, aber nichts für ihr Team schreiben. Krankheit und Urlaub bleiben nur für die jeweilige Person sichtbar.
 
 | Funktion | JSON-Felder |
 | --- | --- |
@@ -57,11 +57,19 @@ Der Server verwendet seine aktuelle Uhrzeit und den Kalendertag in `Europe/Berli
 2. Offene Stempelbuchung von heute: Denselben Eintrag mit `end_at = jetzt` schließen. Antwort enthält `data.action = "clock_out"`.
 3. Bereits abgeschlossener Tag: HTTP `409`; die gespeicherte Endzeit bleibt erhalten. Auch ein bereits manuell vollständig gebuchter Tag wird abgewiesen.
 
-Die Antwort enthält zusätzlich `data.attendance` mit dem Datensatz. **Keine automatische Pause:** `start_break` und `end_break` bleiben `null`. Stempelbuchungen sind durch `is_clock_entry = true` gekennzeichnet. Die bisherigen Funktionen für vollständige Arbeitstage verlangen weiterhin Endzeit und Pause.
+Die Antwort enthält zusätzlich `data.attendance` mit dem Datensatz. Beim Ausstempeln berechnet die Datenbank eine **automatische Pause von 12:30–13:30 Uhr**, wenn alle Bedingungen erfüllt sind:
+
+- Die Zeit zwischen Beginn und Ende ist **größer als sieben Stunden** (Bruttozeit vor Pausenabzug).
+- Beginn ist spätestens um 12:30 Uhr in `Europe/Berlin`.
+- Die volle Pause bis 13:30 Uhr liegt innerhalb des Arbeitszeitraums.
+
+Sonst bleiben `start_break` und `end_break` `null`. Genau sieben Stunden erzeugen keine Pause; ein Beginn nach 12:30 ebenfalls nicht. Beispiel: 08:00–17:00 → 9 h brutto, 1 h Pause, 8 h netto. 13:00–21:00 → 8 h brutto/netto ohne automatische Pause. Offene Buchungen haben noch keine Pause. Stempelbuchungen sind durch `is_clock_entry = true` gekennzeichnet. Manuell vollständig erfasste Arbeitstage behalten ihre explizite Pause.
 
 Eine offene Buchung eines früheren Tages wird mit HTTP `409` gemeldet und muss zunächst durch einen Administrator korrigiert werden. Es erfolgt kein automatisches Ausstempeln über Mitternacht. Ein neuer Tag mit bereits geschlossener Vortagsbuchung beginnt wieder mit Clock-in.
 
 Die Entscheidung über Ein- oder Ausstempeln wird pro Benutzer innerhalb einer Datenbanktransaktion serialisiert. Jeder erfolgreiche Aufruf ist eine neue Stempelaktion: Clients sollten den Button während einer Anfrage sperren und bei unklarem Netzwerkstatus den gespeicherten Zustand prüfen, bevor sie erneut aufrufen.
+
+Agenten verwenden stattdessen die expliziten, wiederholbaren MCP-Aktionen `clock_in` und `clock_out`; siehe [Agentenanbindung](docs/agent-integration.md).
 
 ### Anwesenheit mit Standardpause
 
@@ -156,4 +164,32 @@ supabase db push
 supabase functions deploy
 ```
 
-`verify_jwt = true` ist für alle sieben Funktionen konfiguriert. Die Migrationen unter `supabase/migrations/` sind die Grundlage für weitere Umgebungen.
+`verify_jwt = true` ist für alle sieben REST-Funktionen konfiguriert. Bei `mcp` ist der Gateway-Check aus, damit OAuth-Discovery erreichbar ist; `withSupabase({ auth: 'user' })` authentifiziert jeden MCP-Aufruf. Die Migrationen unter `supabase/migrations/` sind die Grundlage für weitere Umgebungen.
+
+## Auswertung: Wer hat wie viel gearbeitet?
+
+Im Supabase-Dashboard unter Database die Views `attendance_totals` (gesamt pro Person) und `attendance_daily_summary` (pro Person/Tag) öffnen. Eine eigene Weboberfläche ist nicht enthalten.
+
+```sql
+select fullname, net_hours, gross_seconds / 3600 as gross_hours,
+       break_seconds / 3600 as break_hours, open_entries
+from public.attendance_totals
+order by fullname;
+
+select fullname, work_date, net_hours, open_entries
+from public.attendance_daily_summary
+where work_date between '2026-10-01' and '2026-10-31'
+order by fullname, work_date;
+```
+
+Die Views zählen nur abgeschlossene Anwesenheiten. Offene Buchungen erscheinen in `open_entries`, ohne bestätigte Stunden zu erhöhen. Urlaub und Krankheit sind keine geleistete Arbeitszeit. Schichten über Mitternacht werden dem Berliner Startdatum zugeordnet. Mitarbeitende ohne Buchungen erscheinen in `attendance_totals` mit null Stunden.
+
+Die Views verwenden `security_invoker = true`: Über den Data API-Zugang sehen Mitarbeitende nur sich selbst, Vorgesetzte zusätzlich direkt unterstellte Personen, keine weiteren Hierarchiestufen. Das Supabase-Dashboard/der SQL-Editor arbeitet als Administrator und kann alle Daten sehen. Die Beziehung wird über `users.vorgesetzter` gepflegt. Ein RPC `get_attendance_summary(p_from,p_to)` liefert die gleiche Auswertung für einen Zeitraum von maximal 366 Tagen.
+
+## Agentisches Gerüst
+
+Der MCP-Endpunkt bietet 11 Werkzeuge für Profil, Auswertung, eigene Buchungen sowie Krankheit und Urlaub. Alle Schreibwerkzeuge lösen die Identität aus der Anmeldung auf und verlangen `request_id` zur Wiederholungssicherheit. Erfolgreiche Agentenaktionen werden mit Ergebnis in `timestone_private.agent_requests` protokolliert. Unterschiedliche Argumente mit derselben ID werden abgewiesen. Fehlgeschlagene Aktionen hinterlassen weder Teilbuchungen noch Erfolgsbelege.
+
+Urlaub und Krankheit können mit Datumsbereichen geplant werden. Künftige Arbeitsschichten sind noch kein Planungsobjekt; der Agenten-RPC lehnt zukünftige Anwesenheitszeiten ab. Es gibt keine gestartete Hintergrundautomatisierung. Für echte automatische Buchungen braucht der Agent verlässliche Ereignisse und einen autorisierten Ablauf; Kalendertermine allein belegen keine tatsächliche Arbeitszeit.
+
+Einrichtung für Copilot und ChatGPT sowie der verbleibende OAuth-Anmeldeschritt: [docs/agent-integration.md](docs/agent-integration.md).
