@@ -41,3 +41,6 @@ verify_jwt = true
 
 [functions.log_vacation_multiday]
 verify_jwt = true
+
+[functions.log_attendance_clockin]
+verify_jwt = true

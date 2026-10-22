@@ -8,15 +8,38 @@ function request(body: unknown = payload, token = "user-jwt") {
     "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }, body: JSON.stringify(body) });
 }
-test("Alle sechs Endpunkte bilden ihre dokumentierten Parameter ab", () => {
+test("Alle Endpunkte bilden ihre dokumentierten Parameter ab", () => {
   for (const name of functionNames) {
-    const body = name.startsWith("log_attendance")
+    const body = name === "log_attendance_clockin" ? { user: 1 } : name.startsWith("log_attendance")
       ? { user: 1, start: "2026-10-20T08:00:00+02:00", end: "2026-10-20T17:00:00+02:00", ...(name.endsWith("_with_break") ? { startBreak: "2026-10-20T12:00:00+02:00", endBreak: "2026-10-20T12:30:00+02:00" } : {}) }
       : name.endsWith("single_day") ? payload : { user: 1, from: "2026-10-20", to: "2026-10-21" };
     const params = parameters(name, body);
     assert.equal(params.p_user, 1);
     if (!name.startsWith("log_attendance")) assert.equal(params.p_wholeday, 1);
   }
+});
+
+test("Stempeln akzeptiert nur die Benutzer-ID und liefert die Aktion zurück", async () => {
+  for (const field of ["start", "end", "date", "at", "startBreak"]) {
+    assert.throws(() => parameters("log_attendance_clockin", { user: 1, [field]: "2026-10-22" }));
+  }
+  const handler = createHandler("log_attendance_clockin", { url: "https://project.test", key: "public-key", fetch: async (url, init) => {
+    if (String(url).includes("/auth/")) return Response.json({ id: "user" });
+    assert.ok(String(url).endsWith("/rpc/log_attendance_clockin"));
+    assert.deepEqual(JSON.parse(init?.body as string), { p_user: 1 });
+    return Response.json({ action: "clock_in", attendance: { id: 1, end_at: null } });
+  } });
+  const response = await handler(request({ user: 1 }));
+  assert.equal(response.status, 201);
+  assert.equal((await response.json()).data.action, "clock_in");
+});
+
+test("Abgeschlossener Tag liefert einen verständlichen Konflikt", async () => {
+  const handler = createHandler("log_attendance_clockin", { url: "https://project.test", key: "public-key", fetch: async url =>
+    String(url).includes("/auth/") ? Response.json({ id: "user" }) : Response.json({ code: "PT409", message: "Für heute ist bereits eine abgeschlossene Anwesenheit vorhanden." }, { status: 409 }) });
+  const response = await handler(request({ user: 1 }));
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /abgeschlossene Anwesenheit/);
 });
 test("Ungültige Kalenderdaten, IDs, Tagesanteile und Zusatzfelder", () => {
   for (const body of [null, [], { ...payload, user: "1" }, { ...payload, user: 0 }, { ...payload, date: "2026-02-30" }, { ...payload, wholeday: null }, { ...payload, wholeday: 0.51 }, { ...payload, isApproved: true }]) {

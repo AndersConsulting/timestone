@@ -1,6 +1,6 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { btree_gist } from "@electric-sql/pglite/contrib/btree_gist";
 
@@ -19,7 +19,10 @@ before(async () => {
     grant usage on schema public, auth to authenticated, anon, service_role;
     insert into auth.users values ('${alice}'), ('${bob}');
   `);
-  await db.exec(await readFile(new URL("../supabase/migrations/20261022125715_initial_attendance_and_absences.sql", import.meta.url), "utf8"));
+  const migrations = new URL("../supabase/migrations/", import.meta.url);
+  for (const file of (await readdir(migrations)).filter(file => file.endsWith(".sql")).sort()) {
+    await db.exec(await readFile(new URL(file, migrations), "utf8"));
+  }
   await db.query(`insert into public.users(fullname,email,auth_user_id) values ('Alice','alice@example.test',$1),('Bob','bob@example.test',$2)`, [alice, bob]);
 });
 after(() => db.close());
@@ -113,4 +116,106 @@ test("CardID/E-Mail eindeutig, Vorgesetzter muss existieren und darf nicht man s
     "update public.users set vorgesetzter = 999 where id = 1",
     "update public.users set card_id = (select card_id from public.users where id = 1) where id = 2",
   ]) await assert.rejects(asUser(() => db.exec(sql), "service_role"));
+});
+
+test("Stempeln: erster Aufruf öffnet, zweiter schließt denselben Datensatz ohne Pause", async () => {
+  await asUser(async () => {
+    const [first] = await rows("select public.log_attendance_clockin(1) as result");
+    assert.equal(first.result.action, "clock_in");
+    assert.equal(first.result.attendance.end_at, null);
+    assert.equal(first.result.attendance.start_break, null);
+    assert.equal(first.result.attendance.end_break, null);
+    const [second] = await rows("select public.log_attendance_clockin(1) as result");
+    assert.equal(second.result.action, "clock_out");
+    assert.equal(second.result.attendance.id, first.result.attendance.id);
+    assert.ok(Date.parse(second.result.attendance.end_at) >= Date.parse(first.result.attendance.start_at));
+    assert.equal(second.result.attendance.start_break, null);
+    assert.equal(second.result.attendance.end_break, null);
+    assert.equal((await rows("select * from public.anwesenheit")).length, 1);
+    await db.exec("savepoint closed");
+    await assert.rejects(db.exec("select public.log_attendance_clockin(1)"), (e: any) => e.code === "PT409");
+    await db.exec("rollback to savepoint closed");
+    const [entry] = await rows("select * from public.anwesenheit");
+    assert.equal(entry.end_at.toISOString(), new Date(second.result.attendance.end_at).toISOString());
+  });
+});
+
+test("Stempeln: fremde oder nicht vorhandene Benutzer sowie anon werden abgewiesen", async () => {
+  for (const user of [2, 999]) {
+    await assert.rejects(asUser(() => db.exec(`select public.log_attendance_clockin(${user})`)), (e: any) => e.code === "42501");
+  }
+  await assert.rejects(asUser(() => db.exec("select public.log_attendance_clockin(1)"), "anon"), (e: any) => e.code === "42501");
+});
+
+test("Stempeln: offene Vortagsbuchung wird weder geschlossen noch überschrieben", async () => {
+  await asUser(async () => {
+    await db.exec(`insert into public.anwesenheit(user_id,start_at,is_clock_entry)
+      values (1, (((clock_timestamp() at time zone 'Europe/Berlin')::date - 1) + time '08:00') at time zone 'Europe/Berlin', true)`);
+    await db.exec("savepoint stale");
+    await assert.rejects(db.exec("select public.log_attendance_clockin(1)"), (e: any) => e.code === "PT409");
+    await db.exec("rollback to savepoint stale");
+    const entries = await rows("select * from public.anwesenheit");
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].end_at, null);
+  });
+});
+
+test("Stempeln: bereits vollständig gebuchter Tag bleibt unverändert", async () => {
+  await asUser(async () => {
+    await db.exec(`select public.log_attendance_without_break(1,
+      ((clock_timestamp() at time zone 'Europe/Berlin')::date + time '08:00') at time zone 'Europe/Berlin',
+      ((clock_timestamp() at time zone 'Europe/Berlin')::date + time '17:00') at time zone 'Europe/Berlin')`);
+    const before = await rows("select * from public.anwesenheit");
+    await db.exec("savepoint complete");
+    await assert.rejects(db.exec("select public.log_attendance_clockin(1)"), (e: any) => e.code === "PT409");
+    await db.exec("rollback to savepoint complete");
+    assert.deepEqual(await rows("select * from public.anwesenheit"), before);
+  });
+});
+
+test("Update-Rechte erlauben nur das Schließen eigener offener Stempelbuchungen", async () => {
+  await asUser(async () => {
+    await db.exec("select public.log_attendance_clockin(1)");
+    assert.equal((await rows("update public.anwesenheit set end_at = clock_timestamp() returning id")).length, 1);
+    assert.equal((await rows("update public.anwesenheit set end_at = clock_timestamp() returning id")).length, 0);
+  });
+  for (const assignment of ["user_id = 2", "start_at = clock_timestamp()", "is_clock_entry = false"]) {
+    await assert.rejects(asUser(() => db.exec(`update public.anwesenheit set ${assignment}`)), (e: any) => e.code === "42501");
+  }
+});
+
+test("Stempelbuchungen dürfen keine Pause erhalten; vollständige Buchungen benötigen weiterhin Endzeit", async () => {
+  await assert.rejects(asUser(() => db.exec(`insert into public.anwesenheit(user_id,start_at,start_break,end_break,is_clock_entry)
+    values (1,'2026-10-20T08:00:00Z','2026-10-20T12:00:00Z','2026-10-20T13:00:00Z',true)`)), (e: any) => e.code === "23514");
+  await assert.rejects(asUser(() => db.exec("select public.log_attendance_with_break(1,'2026-10-20T08:00:00Z',null,'2026-10-20T12:00:00Z','2026-10-20T13:00:00Z')")), (e: any) => e.code === "23514");
+});
+
+test("Nach geschlossener Vortagsbuchung beginnt heute ein neuer Clock-in", async () => {
+  await asUser(async () => {
+    await db.exec(`insert into public.anwesenheit(user_id,start_at,end_at,is_clock_entry)
+      values (1,
+        (((clock_timestamp() at time zone 'Europe/Berlin')::date - 1) + time '08:00') at time zone 'Europe/Berlin',
+        (((clock_timestamp() at time zone 'Europe/Berlin')::date - 1) + time '17:00') at time zone 'Europe/Berlin', true)`);
+    const [entry] = await rows("select public.log_attendance_clockin(1) as result");
+    assert.equal(entry.result.action, "clock_in");
+    assert.equal((await rows("select * from public.anwesenheit")).length, 2);
+  });
+});
+
+test("Ein Stempelpaar je Berliner Tag, auch wenn die UTC-Daten verschieden sind", async () => {
+  await assert.rejects(asUser(async () => {
+    await db.exec(`insert into public.anwesenheit(user_id,start_at,end_at,is_clock_entry)
+      values (1,'2026-10-20T22:30:00Z','2026-10-20T23:00:00Z',true)`);
+    await db.exec(`insert into public.anwesenheit(user_id,start_at,end_at,is_clock_entry)
+      values (1,'2026-10-21T08:00:00Z','2026-10-21T09:00:00Z',true)`);
+  }), (e: any) => e.code === "23505");
+});
+
+test("Direktes Update kann keine fremde offene Buchung schließen", async () => {
+  await asUser(async () => {
+    await db.exec(`insert into public.anwesenheit(user_id,start_at,is_clock_entry)
+      values (2,clock_timestamp() - interval '1 hour',true)`);
+    await db.exec("set local role authenticated");
+    assert.equal((await rows("update public.anwesenheit set end_at = clock_timestamp() where user_id = 2 returning id")).length, 0);
+  }, "service_role");
 });

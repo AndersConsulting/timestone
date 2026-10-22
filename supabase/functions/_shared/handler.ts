@@ -2,6 +2,7 @@ export const functionNames = [
   "log_attendance_without_break", "log_attendance_with_break",
   "log_sickleave_single_day", "log_sickleave_multiday",
   "log_vacation_single_day", "log_vacation_multiday",
+  "log_attendance_clockin",
 ] as const;
 export type FunctionName = typeof functionNames[number];
 
@@ -38,6 +39,10 @@ export function parameters(name: FunctionName, input: unknown): Record<string, u
   const body = input as Record<string, unknown>;
   if (!Number.isInteger(body.user) || (body.user as number) < 1 || (body.user as number) > 2147483647) {
     throw new InputError("user muss eine positive Integer-ID sein.");
+  }
+  if (name === "log_attendance_clockin") {
+    if (Object.keys(body).some(key => key !== "user")) throw new InputError("Nur user erforderlich; die Stempelzeit kommt vom Server.");
+    return { p_user: body.user };
   }
   const attendance = name.startsWith("log_attendance_");
   const customBreak = name === "log_attendance_with_break";
@@ -101,6 +106,7 @@ export function createHandler(name: FunctionName, dependencies: Dependencies) {
       if (!response.ok) {
         const code = data?.code;
         if (code === "42501") return json(403, { error: "Kein Zugriff auf diesen Benutzer." });
+        if (code === "PT409") return json(409, { error: data.message });
         if (code === "23505" || code === "23P01") return json(409, { error: "Ein Eintrag existiert bereits oder überschneidet sich." });
         if (typeof code === "string" && (code.startsWith("22") || code.startsWith("23"))) {
           return json(400, { error: "Ungültige Daten. Zeiträume und Pause prüfen; die Standardpause muss vollständig innerhalb der Arbeitszeit liegen." });
