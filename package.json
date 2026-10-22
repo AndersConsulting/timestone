@@ -3,11 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "auth:build": "node scripts/build-auth.mjs",
+    "auth:preview": "node scripts/serve-auth.mjs",
+    "user:login": "node --import tsx scripts/timestone.ts login",
+    "user:attendance": "node --import tsx scripts/timestone.ts attendance",
+    "user:logout": "node --import tsx scripts/timestone.ts logout"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
@@ -20,6 +27,7 @@
     "@electric-sql/pglite": "0.5.11",
     "@types/node": "26.6.5",
     "tsx": "4.23.15",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "esbuild": "0.28.2"
   }
 }

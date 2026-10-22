@@ -1,6 +1,12 @@
 # Timestone
 
-Supabase-Backend für Anwesenheit, Krankheit und Urlaub mit MCP-Schnittstelle für Assistenten. Speichert vollständige Arbeitstage, Stempelzeiten und Abwesenheiten; zwei Datenbank-Views zeigen die geleisteten Zeiten. Keine Weboberfläche.
+Supabase-Backend für Anwesenheit, Krankheit und Urlaub mit MCP-Schnittstelle für Assistenten. Speichert vollständige Arbeitstage, Stempelzeiten und Abwesenheiten; zwei Datenbank-Views zeigen die geleisteten Zeiten. Eine kleine Weboberfläche unter `auth/` dient der Microsoft-Anmeldung und OAuth-Freigabe, nicht der Verwaltung von Zeitbuchungen.
+
+## Microsoft-Anmeldung für Copilot
+
+Gewählter Standardweg: einmal mit dem Microsoft-Firmenkonto verbinden, dann erneuert die persönliche Copilot-Verbindung ihre Supabase-Tokens im Hintergrund. Die bestehende Zuordnung über `users.auth_user_id` und RLS bleibt erhalten.
+
+Login-/Freigabeseite bauen: `npm run auth:build`; lokale Vorschau: `npm run auth:preview`. Die Entra-App, das HTTPS-Hosting und die Supabase-/Copilot-Einstellungen sind noch einzurichten. Vollständige Schritte und Refresh-Test: [Microsoft-Login einrichten](docs/microsoft-login.md).
 
 ## Datenmodell
 
@@ -148,6 +154,17 @@ Schreiberfolg: HTTP `201`, `{ "data": ... }`. Vollständige Anwesenheit liefert 
 
 Fehler haben die Form `{ "error": "..." }`. Gatewayfehler können ein anderes Format haben.
 
+## Login mit E-Mail und Passwort
+
+Der Standard ist jetzt E-Mail/Passwort über Supabase Auth. Microsoft/Entra wird dafür nicht benötigt. Nach einmaligem Anlegen des Auth-Kontos und Verknüpfen mit dem Mitarbeiter:
+
+```sh
+npm run user:login -- lh@andersconsulting.com
+npm run user:attendance -- 2026-10-01 2026-10-31
+```
+
+Der Login fragt das Passwort verdeckt ab; die lokale Sitzung ist von Git ausgeschlossen. Der Auswertungsbefehl ruft ausschließlich die Edge Function auf. Alternativ bietet `npm run auth:build` / `npm run auth:preview` eine Login-Seite mit Anwesenheitsliste. [Einrichtung und Bedienung](docs/password-login.md).
+
 ## Benutzer einrichten
 
 1. Benutzer in Supabase Auth anlegen oder einladen.
@@ -190,7 +207,7 @@ supabase functions deploy
 
 ## Auswertung: Wer hat wie viel gearbeitet?
 
-Im Supabase-Dashboard unter Database die Views `attendance_totals` (gesamt pro Person) und `attendance_daily_summary` (pro Person/Tag) öffnen. Eine eigene Weboberfläche ist nicht enthalten.
+Im Supabase-Dashboard unter Database die Views `attendance_totals` (gesamt pro Person) und `attendance_daily_summary` (pro Person/Tag) öffnen. Die Login-Seite zeigt die eigene Anwesenheitsliste; die Team-Auswertung ist über die Views und das MCP-Werkzeug verfügbar.
 
 ```sql
 select fullname, net_hours, gross_seconds / 3600 as gross_hours,

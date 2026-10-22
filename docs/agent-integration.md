@@ -1,5 +1,7 @@
 # Agentenanbindung
 
+**Aktueller Einstieg:** [E-Mail-/Passwort-Login](password-login.md). Im lokalen Workspace einmal `npm run user:login -- lh@andersconsulting.com` ausführen; danach liefert `npm run user:attendance -- 2026-10-01 2026-10-31` die Auswertung ausschließlich über die Edge Function. Für diesen Weg ist kein Microsoft-Login und kein OAuth-Server erforderlich.
+
 MCP-Endpunkt des verbundenen Projekts:
 
 ```text
@@ -34,6 +36,8 @@ Die Konfiguration verwendet das VS-Code-Format mit `inputs`, nicht das portable 
 
 ## ChatGPT und dauerhafte OAuth-Anmeldung
 
+Die optionale Login-/Freigabeseite unter `auth/` verwendet E-Mail und Passwort. Eine gehostete MCP-Verbindung benötigt weiterhin den Supabase-OAuth-Server und eine Client-Konfiguration. Die lokale CLI-Sitzung wird nicht automatisch an ChatGPT oder Copilot übertragen. [Passwort-Login und lokale Nutzung](password-login.md); [Microsoft als späterer Ausbau](microsoft-login.md).
+
 Der Server stellt OAuth Protected Resource Metadata unter `/functions/v1/mcp/oauth-protected-resource` bereit und verweist bei HTTP 401 über `WWW-Authenticate` darauf. Er verwendet die Supabase-Auth-Middleware zur Prüfung der Benutzer-Tokens.
 
 Die Bereitstellung des MCP-Servers allein verbindet noch kein ChatGPT-Konto. Für den vollständigen Anmeldefluss müssen einmalig folgende Teile eingerichtet sein:
@@ -41,7 +45,7 @@ Die Bereitstellung des MCP-Servers allein verbindet noch kein ChatGPT-Konto. Fü
 Prüfstand am 22.10.2026: MCP-Discovery liefert HTTP 200 und der geschützte MCP-Endpunkt ohne Anmeldung HTTP 401. Die Supabase-OAuth-Discovery meldet noch HTTP 404 mit `feature_disabled` / `OAuth server is disabled`. Der vollständige ChatGPT-OAuth-Login ist daher noch nicht betriebsbereit.
 
 1. Mitarbeiter in Supabase Auth und `users` zuordnen.
-2. Supabase OAuth 2.1 Server aktivieren und eine erreichbare Login-/Consent-Oberfläche samt Authorization Path bereitstellen. Diese Oberfläche ist noch nicht Bestandteil dieses Backend-Gerüsts.
+2. Supabase OAuth 2.1 Server aktivieren und die Login-/Consent-Oberfläche aus `auth/` auf einer HTTPS-Origin bereitstellen; Authorization Path `/oauth/consent` konfigurieren.
 3. Einen passenden OAuth-Client registrieren oder Dynamic Client Registration aktivieren; die vom Client angezeigte Redirect-URI verwenden.
 4. Den oben genannten MCP-Endpunkt in ChatGPT als eigene MCP-Verbindung mit OAuth hinzufügen und sich als Mitarbeiter anmelden. Die verfügbaren Möglichkeiten hängen vom ChatGPT-Workspace ab.
 
