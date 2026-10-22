@@ -37,8 +37,7 @@ function render(view: View) {
     return;
   }
   if (view.kind === "login") {
-    content.append(element("h1", "Anmelden"),
-      element("p", "Deine Zeiterfassung bei Anders Consulting."));
+    content.append(element("h1", "logge dich ein - du musst das nicht jedes mal machen."));
     const form = document.createElement("form");
     const email = input("email", "E-Mail-Adresse", "email", "username");
     email.field.value = view.email ?? "";
@@ -73,7 +72,7 @@ function render(view: View) {
       password.field.value = "";
       void flow.login(email.field.value, secret);
     });
-    content.append(form, element("p", "Noch kein Konto oder Passwort vergessen? Wende dich an deinen Administrator.", "hint"));
+    content.append(form);
     return;
   }
   const identity = element("div", "", "identity");
