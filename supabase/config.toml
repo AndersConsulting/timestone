@@ -1,0 +1,43 @@
+project_id = "timestone"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 17
+
+[db.migrations]
+enabled = true
+schema_paths = []
+
+[db.seed]
+enabled = false
+
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+enable_signup = false
+
+[functions.log_attendance_without_break]
+verify_jwt = true
+
+[functions.log_attendance_with_break]
+verify_jwt = true
+
+[functions.log_sickleave_single_day]
+verify_jwt = true
+
+[functions.log_sickleave_multiday]
+verify_jwt = true
+
+[functions.log_vacation_single_day]
+verify_jwt = true
+
+[functions.log_vacation_multiday]
+verify_jwt = true
