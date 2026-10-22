@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { mkdir, readFile, writeFile, copyFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, copyFile, cp } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnvFile } from "node:process";
@@ -28,6 +28,7 @@ for (const route of ["oauth/consent", "oauth/callback"]) {
   await writeFile(resolve(out, route, "index.html"), html);
 }
 await copyFile(resolve(root, "auth/styles.css"), resolve(out, "styles.css"));
+await cp(resolve(root, "auth/assets"), resolve(out, "assets"), { recursive: true });
 // Static hosts that support _headers can apply these in addition to the meta CSP.
 await writeFile(resolve(out, "_headers"), `/*\n  Content-Security-Policy: ${csp}; frame-ancestors 'none'\n  Referrer-Policy: no-referrer\n  X-Content-Type-Options: nosniff\n  X-Frame-Options: DENY\n  Cache-Control: no-store\n`);
 console.log("Built dist/auth — deploy this directory to your HTTPS login host.");

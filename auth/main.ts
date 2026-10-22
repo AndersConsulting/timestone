@@ -37,20 +37,36 @@ function render(view: View) {
     return;
   }
   if (view.kind === "login") {
-    content.append(element("h1", "Bei Timestone anmelden"),
-      element("p", "Dein Benutzername ist deine E-Mail-Adresse."));
+    content.append(element("h1", "Willkommen zurück."),
+      element("p", "Melde dich an und behalte deine Zeit im Blick."));
     const form = document.createElement("form");
     const email = input("email", "E-Mail-Adresse", "email", "username");
     email.field.value = view.email ?? "";
+    email.field.placeholder = "name@andersconsulting.com";
     const password = input("password", "Passwort", "password", "current-password");
-    const submit = element("button", "Anmelden", "primary") as HTMLButtonElement;
+    password.field.placeholder = "Dein Passwort";
+    const passwordWrap = element("div", "", "password-wrap");
+    const reveal = element("button", "Anzeigen", "password-toggle") as HTMLButtonElement;
+    reveal.type = "button";
+    reveal.setAttribute("aria-label", "Passwort anzeigen");
+    reveal.setAttribute("aria-controls", "password");
+    reveal.setAttribute("aria-pressed", "false");
+    reveal.addEventListener("click", () => {
+      const visible = password.field.type === "password";
+      password.field.type = visible ? "text" : "password";
+      reveal.textContent = visible ? "Verbergen" : "Anzeigen";
+      reveal.setAttribute("aria-label", visible ? "Passwort verbergen" : "Passwort anzeigen");
+      reveal.setAttribute("aria-pressed", String(visible));
+    });
+    passwordWrap.append(password.field, reveal);
+    const submit = element("button", "Anmelden →", "primary") as HTMLButtonElement;
     submit.type = "submit";
     if (view.message) {
       const message = element("p", view.message, "error");
       message.setAttribute("role", "alert");
       form.append(message);
     }
-    form.append(email.label, email.field, password.label, password.field, submit);
+    form.append(email.label, email.field, password.label, passwordWrap, submit);
     form.addEventListener("submit", event => {
       event.preventDefault();
       const secret = password.field.value;
@@ -63,7 +79,7 @@ function render(view: View) {
   const identity = element("div", "", "identity");
   identity.append(element("strong", view.employee ?? "Timestone-Konto"), element("span", view.email));
   if (view.kind === "account") {
-    content.append(element("h1", view.employee ? "Du bist angemeldet" : "Mitarbeiterprofil fehlt"), identity);
+    content.append(element("h1", view.employee ? "Deine Zeit im Überblick." : "Mitarbeiterprofil fehlt"), identity);
     if (view.employee) renderReportForm();
     else content.append(element("p", "Dein Konto ist noch keinem Timestone-Mitarbeiter zugeordnet. Bitte deinen Administrator, die Zuordnung einzurichten."),
       element("p", `Kontokennung für deinen Administrator: ${view.userId}`, "hint identifier"));
@@ -103,7 +119,13 @@ function renderReportForm() {
   const output = document.createElement("pre");
   output.className = "report";
   output.setAttribute("aria-live", "polite");
-  form.append(from.label, from.field, to.label, to.field, submit);
+  const dates = element("div", "", "date-range");
+  const start = element("div", "");
+  const end = element("div", "");
+  start.append(from.label, from.field);
+  end.append(to.label, to.field);
+  dates.append(start, end);
+  form.append(dates, submit);
   form.addEventListener("submit", async event => {
     event.preventDefault();
     submit.disabled = true;
