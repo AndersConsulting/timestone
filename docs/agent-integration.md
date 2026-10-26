@@ -23,8 +23,11 @@ Das ist die Timestone-Anwendungsschnittstelle, nicht der administrative Supabase
 | `log_attendance_with_break` | Tatsächlichen vollständigen Arbeitstag mit eigener Pause nachtragen |
 | `log_sickleave_single_day` / `log_sickleave_multiday` | Krankheit erfassen |
 | `log_vacation_single_day` / `log_vacation_multiday` | Urlaub erfassen, zunächst ungenehmigt |
+| `get_vacations` | Eigene und direkte Team-Urlaubstage mit IDs lesen |
+| `cancel_vacation` | Eigene offene oder genehmigte direkte Team-Einträge löschen |
+| `update_approved_vacation` | Genehmigten direkten Team-Urlaubstag ändern |
 
-Alle Schreibwerkzeuge verlangen eine UUID `request_id`. Je neuer Absicht eine neue UUID; bei Wiederholung nach Netzwerkfehlern dieselbe UUID mit identischen Argumenten senden. Der RPC `agent_execute` speichert Aktion und Ergebnis atomar. Ein wiederholtes `clock_in` mit gleicher ID liefert das erste Ergebnis; eine neue `clock_in`-ID bei bereits offener Buchung wird abgewiesen und stempelt nicht aus. Die klassische REST-Funktion `log_attendance_clockin` bleibt ein Toggle und soll von Agenten nicht blind wiederholt werden.
+Alle Schreibwerkzeuge verlangen eine UUID `request_id`. Je neuer Absicht eine neue UUID; bei Wiederholung nach Netzwerkfehlern dieselbe UUID mit identischen Argumenten senden. Die RPCs `agent_execute` und `vacation_execute` speichern Aktion und Ergebnis atomar. Ein wiederholtes `clock_in` mit gleicher ID liefert das erste Ergebnis; eine neue `clock_in`-ID bei bereits offener Buchung wird abgewiesen und stempelt nicht aus. Die klassische REST-Funktion `log_attendance_clockin` bleibt ein Toggle und soll von Agenten nicht blind wiederholt werden.
 
 Schreibwerkzeuge haben kein frei wählbares `user`-Feld. Vorgesetzte dürfen Teamzeiten nur lesen. Das Backend übernimmt die Pausenberechnung beim Schließen einer Stempelbuchung. Offene Stempelbuchungen werden am Tagesende um 00:00 Europe/Berlin geschlossen (`auto_closed = true`); der nächste Tag beginnt mit neuem Clock-in.
 
@@ -62,3 +65,43 @@ Quellen: [Supabase OAuth-Einrichtung](https://supabase.com/docs/guides/auth/oaut
 5. Ergebnis und gegebenenfalls Auswertung lesen; Konflikte klären, statt mit neuen IDs weitere Schreibversuche auszulösen.
 
 Beispielbefehle nach erfolgreicher Verbindung: „Stemple mich ein“, „Stemple mich aus“, „Trage für nächsten Montag einen halben Urlaubstag ein“, „Wie viele Stunden habe ich diese Woche gearbeitet?“, „Zeige meine Anwesenheiten dieser Woche als Tabelle“. Für die letzte Anfrage `get_my_attendance_list` mit dem aufgelösten Datumsbereich verwenden und den zurückgegebenen Codeblock unverändert anzeigen. Urlaub und Krankheit sind die aktuelle Planungsgrundlage; geplante Arbeitsschichten kommen später.
+
+## Urlaubsanträge zurückziehen und genehmigten Urlaub ändern
+
+Ab der Migration `vacation_management` und MCP-Version 0.4.0:
+
+- `get_vacations(from, to)` liest eigene Urlaubstage und Urlaubstage des direkten
+  Teams, einschließlich `id`, `user_id`, `fullname`, `date`, `wholeday`, `is_approved`.
+- `cancel_vacation(request_id, ids)` löscht genau die angegebenen Einträge.
+  Mitarbeitende dürfen eigene **nicht genehmigte** Anträge löschen. Direkte
+  Vorgesetzte dürfen **genehmigte** Einträge ihrer Teammitglieder löschen.
+- `update_approved_vacation(request_id, id, date, wholeday)` ändert als direkter
+  Vorgesetzter Datum und Umfang (0.5/1) eines genehmigten Team-Eintrags.
+  Eigentümer und Genehmigungsstatus bleiben unverändert.
+- Erstellen bleibt auf eigene, nicht genehmigte Anträge beschränkt. Offene Anträge
+  werden bei Bedarf vom Eigentümer gelöscht und neu erstellt. Manager erhalten
+  keine Änderungs-/Löschrechte an offenen fremden Anträgen und keine Sonderrechte
+  für eigene genehmigte Einträge. Indirekte Teams bleiben ausgeschlossen.
+- Eine Genehmigungsfunktion ist nicht Bestandteil dieser Erweiterung.
+
+Vor jeder Rücknahme/Änderung den gewünschten Zeitraum lesen und die konkreten IDs
+zuordnen. Bei unklarer Person oder Zeitraum nachfragen. Bei gemischten oder
+inzwischen geänderten Einträgen keine eigenständige Teilrücknahme durchführen:
+Sobald eine ID fehlt oder nicht gelöscht werden darf, wird die **gesamte**
+Löschanfrage zurückgerollt. Bei Konflikt Zustand neu lesen und dem Benutzer erklären.
+Erfolg nur nach erfolgreichem Tool-Ergebnis melden.
+
+Je Aktion eine neue UUID als `request_id`; bei technischen Wiederholungen dieselbe
+UUID und identische Argumente benutzen. Löschung und Empfangsbeleg werden atomar
+gespeichert. Ein Retry löscht keinen später für dasselbe Datum neu angelegten Antrag.
+
+Die gleichnamigen Edge Functions akzeptieren POST/JSON mit denselben Argumenten
+(ohne frei wählbare Benutzer-ID). `get_vacations` benötigt nur `from` und `to`.
+Sie prüfen die Anmeldung und reichen den User-JWT an die SECURITY-INVOKER-RPCs
+weiter. RLS schützt dieselben Rechte auch bei direkten REST-Zugriffen.
+
+Deployment: zuerst die Migration anwenden, dann `get_vacations`, `cancel_vacation`,
+`update_approved_vacation` und die aktualisierte `mcp` Edge Function veröffentlichen.
+Anschließend die Tool-Liste in Copilot Studio aktualisieren und den Agenten neu
+veröffentlichen. Alte Instructions „nur eigene Daten schreiben“ für Urlaub durch
+obige Regeln ersetzen; für Anwesenheit und Krankheit bleibt die Beschränkung bestehen.

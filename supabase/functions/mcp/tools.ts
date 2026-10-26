@@ -13,8 +13,8 @@ const security = { securitySchemes: [{ type: "oauth2", scopes: [] }] };
 const result = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }] });
 
 export function createTimeServer(db: SupabaseClient, authUserId: string) {
-  const server = new McpServer({ name: "timestone", version: "0.3.0" }, {
-    instructions: "Zeitzone Europe/Berlin. Vor relativen Angaben get_me verwenden, vor Änderungen den aktuellen Zustand lesen. Nur eigene Daten schreiben. clock_in und clock_out sind explizite Aktionen; nie die Toggle-Funktion blind wiederholen. Je Aktion eine request_id erzeugen und bei Retry unverändert wiederverwenden. Keine tatsächlichen Arbeitszeiten aus Kalenderterminen oder Plänen erfinden. Nach unklarer Eingabe fehlende Zeiten klären. Automatische Pause bei Stempelbuchungen: mehr als 7 Stunden Bruttozeit, Beginn spätestens 12:30 und Ende frühestens 13:30; dann 12:30–13:30, sonst keine. Urlaube starten ungenehmigt. Mehrtagesbereiche enthalten alle Kalendertage. Offene Stempelbuchungen werden am Tagesende um 00:00 Europe/Berlin automatisch geschlossen und als auto_closed markiert. Offene Zeiten zählen nicht als bestätigte Arbeit. Für Listen im Chat get_my_attendance_list verwenden und den Codeblock unverändert ausgeben. Planung umfasst derzeit Urlaub und Krankheit, keine geplanten Arbeitsschichten.",
+  const server = new McpServer({ name: "timestone", version: "0.4.0" }, {
+    instructions: "Zeitzone Europe/Berlin. Vor relativen Angaben get_me verwenden, vor Änderungen den aktuellen Zustand lesen. Eigene offene Urlaubsanträge erstellen und löschen. Genehmigte Urlaube dürfen ausschließlich direkte Vorgesetzte für ihr Team ändern oder löschen; keine Selbstbearbeitung. Vor Urlaubsänderungen get_vacations lesen und nur die ausdrücklich gewünschten IDs verwenden. Sonstige Daten nur für sich selbst schreiben. clock_in und clock_out sind explizite Aktionen; nie die Toggle-Funktion blind wiederholen. Je Aktion eine request_id erzeugen und bei Retry unverändert wiederverwenden. Keine tatsächlichen Arbeitszeiten aus Kalenderterminen oder Plänen erfinden. Nach unklarer Eingabe fehlende Zeiten klären. Automatische Pause bei Stempelbuchungen: mehr als 7 Stunden Bruttozeit, Beginn spätestens 12:30 und Ende frühestens 13:30; dann 12:30–13:30, sonst keine. Urlaube starten ungenehmigt. Mehrtagesbereiche enthalten alle Kalendertage. Offene Stempelbuchungen werden am Tagesende um 00:00 Europe/Berlin automatisch geschlossen und als auto_closed markiert. Offene Zeiten zählen nicht als bestätigte Arbeit. Für Listen im Chat get_my_attendance_list verwenden und den Codeblock unverändert ausgeben. Planung umfasst derzeit Urlaub und Krankheit, keine geplanten Arbeitsschichten.",
   });
   async function rpc(name: string, args: Record<string, unknown>) {
     const { data, error } = await db.rpc(name, args);
@@ -73,5 +73,21 @@ export function createTimeServer(db: SupabaseClient, authUserId: string) {
       inputSchema: z.strictObject({ request_id: requestId, ...range, wholeday: fraction }), annotations: write, _meta: security,
     }, ({ request_id, ...args }) => mutate(`log_${kind}_multiday`, request_id, args));
   }
+  server.registerTool("get_vacations", {
+    description: "Urlaubseinträge mit IDs, Namen und Genehmigungsstatus laden: eigene sowie direktes Team. Vor Rücknahme oder Änderung aufrufen; nur die vom Nutzer gemeinten Einträge auswählen.",
+    inputSchema: z.strictObject(range), annotations: read, _meta: security,
+  }, ({ from, to }) => rpc("get_vacations", { p_from: from, p_to: to }));
+  const vacationMutation = (operation: string, request_id: string, args: Record<string, unknown>) =>
+    rpc("vacation_execute", { p_request_id: request_id, p_operation: operation, p_arguments: args });
+  server.registerTool("cancel_vacation", {
+    description: "Ausgewählte Urlaubseinträge endgültig löschen/zurückziehen. Eigene offene Anträge oder als direkter Vorgesetzter genehmigte Team-Einträge. IDs zuvor mit get_vacations lesen. Alle IDs werden atomar gelöscht oder keine; keine automatische Teilrücknahme bei Konflikten.",
+    inputSchema: z.strictObject({ request_id: requestId, ids: z.array(z.number().int().min(1).max(2147483647)).min(1).max(366).refine(ids => new Set(ids).size === ids.length, "IDs müssen eindeutig sein") }),
+    annotations: { ...write, destructiveHint: true }, _meta: security,
+  }, ({ request_id, ...args }) => vacationMutation("cancel_vacation", request_id, args));
+  server.registerTool("update_approved_vacation", {
+    description: "Als direkter Vorgesetzter Datum und Umfang eines genehmigten Team-Urlaubstags ändern. Keine eigenen Einträge, keine offenen Anträge, keine Änderung des Mitarbeiters oder Genehmigungsstatus. ID vorher mit get_vacations lesen.",
+    inputSchema: z.strictObject({ request_id: requestId, id: z.number().int().min(1).max(2147483647), date: z.iso.date(), wholeday: z.union([z.literal(0.5), z.literal(1)]) }),
+    annotations: { ...write, destructiveHint: true }, _meta: security,
+  }, ({ request_id, ...args }) => vacationMutation("update_approved_vacation", request_id, args));
   return server;
 }

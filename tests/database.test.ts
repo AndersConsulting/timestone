@@ -386,3 +386,108 @@ test("Agenten können keine fremde Identität, neue Payload unter alter ID oder 
     assert.equal((await rows("select * from timestone_private.agent_requests")).length, 1);
   });
 });
+
+// Vacation authorization fixtures are isolated and rolled back per test.
+async function vacationFixture(fn: () => Promise<void>, actor = alice) {
+  await asUser(async () => {
+    await db.exec(`update public.users set vorgesetzter=1 where id=2;
+      insert into public.urlaube(user_id,date,is_approved) values
+      (1,'2027-02-01',false),(1,'2027-02-02',true),
+      (2,'2027-02-01',false),(2,'2027-02-02',true);`);
+    await db.exec('set local role authenticated');
+    await fn();
+  }, 'service_role', actor);
+}
+const vacationCall = async (op: string, args: unknown, request = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd') =>
+  (await db.query<any>('select public.vacation_execute($1,$2,$3) as result', [request, op, args])).rows[0].result;
+const vacationId = async (user: number, approved: boolean) =>
+  (await db.query<any>('select id from public.urlaube where user_id=$1 and is_approved=$2', [user, approved])).rows[0].id;
+
+test('Urlaub: eigene offene Anträge löschen, Retry löscht keinen Ersatzantrag', async () => {
+  await vacationFixture(async () => {
+    const id = await vacationId(1, false);
+    const first = await vacationCall('cancel_vacation', { ids: [id] });
+    assert.equal(first.count, 1);
+    await db.exec("select public.log_vacation_single_day(1,'2027-02-01')");
+    assert.deepEqual(await vacationCall('cancel_vacation', { ids: [id] }), first);
+    assert.equal((await rows('select * from public.urlaube where user_id=1')).length, 2);
+    await db.exec('savepoint reused');
+    await assert.rejects(vacationCall('cancel_vacation', { ids: [id + 1] }), (e: any) => e.code === 'PT409');
+    await db.exec('rollback to savepoint reused');
+  });
+});
+
+test('Urlaub: eigene genehmigte, fremde offene und unbekannte IDs verhindern gesamte Rücknahme', async () => {
+  await vacationFixture(async () => {
+    const own = await vacationId(1, false);
+    for (const forbidden of [await vacationId(1, true), await vacationId(2, false), 2147483647]) {
+      await db.exec('savepoint denied');
+      await assert.rejects(vacationCall('cancel_vacation', { ids: [own, forbidden] }), (e: any) => e.code === 'PT409');
+      await db.exec('rollback to savepoint denied');
+      assert.equal((await rows('select * from public.urlaube')).length, 4);
+      assert.equal((await rows('select * from timestone_private.agent_requests')).length, 0);
+    }
+    assert.equal((await rows('delete from public.urlaube where user_id=1 and is_approved returning id')).length, 0);
+    assert.equal((await rows('delete from public.urlaube where user_id=2 and not is_approved returning id')).length, 0);
+  });
+});
+
+test('Urlaub: direkter Manager ändert/löscht genehmigte Teamtage, ohne Eigentümer oder Status zu ändern', async () => {
+  await vacationFixture(async () => {
+    const id = await vacationId(2, true);
+    const changed = await vacationCall('update_approved_vacation', { id, date: '2027-02-03', wholeday: 0.5 });
+    assert.equal(changed.user_id, 2);
+    assert.equal(changed.is_approved, true);
+    assert.equal(Number(changed.wholeday), 0.5);
+    assert.deepEqual(await vacationCall('update_approved_vacation', { id, date: '2027-02-03', wholeday: 0.5 }), changed);
+    for (const field of ['user_id=1', 'is_approved=false']) {
+      await db.exec('savepoint forbidden_column');
+      await assert.rejects(db.exec(`update public.urlaube set ${field} where id=${id}`), (e: any) => e.code === '42501');
+      await db.exec('rollback to savepoint forbidden_column');
+    }
+    assert.equal((await vacationCall('cancel_vacation', { ids: [id] }, 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee')).count, 1);
+  });
+});
+
+test('Urlaub: keine Änderungen eigener genehmigter oder offener Teamtage, Konflikte rollen zurück', async () => {
+  await vacationFixture(async () => {
+    for (const id of [await vacationId(1, true), await vacationId(1, false), await vacationId(2, false)]) {
+      await db.exec('savepoint denied_update');
+      await assert.rejects(vacationCall('update_approved_vacation', { id, date: '2027-02-05', wholeday: 1 }), (e: any) => e.code === 'PT409');
+      await db.exec('rollback to savepoint denied_update');
+    }
+    await db.exec('savepoint overlap');
+    await assert.rejects(vacationCall('update_approved_vacation', { id: await vacationId(2, true), date: '2027-02-01', wholeday: 1 }), (e: any) => e.code === '23505');
+    await db.exec('rollback to savepoint overlap');
+    assert.equal((await rows('select * from timestone_private.agent_requests')).length, 0);
+  });
+});
+
+test('Urlaub: Teamzugriff endet bei direkten Mitarbeitern; anonyme Aufrufe ausgeschlossen', async () => {
+  await asUser(async () => {
+    await db.exec("update public.users set vorgesetzter=1 where id=2");
+    const [child] = await rows("insert into public.users(fullname,email,vorgesetzter) values('Child','vacation-child@example.test',2) returning id");
+    const [other] = await rows("insert into public.users(fullname,email) values('Other','vacation-other@example.test') returning id");
+    for (const user of [1,2,child.id,other.id]) await db.query("insert into public.urlaube(user_id,date,is_approved) values($1,'2027-03-01',true)", [user]);
+    const hidden = await rows(`select id from public.urlaube where user_id in (${child.id},${other.id})`);
+    await db.exec('set local role authenticated');
+    const [list] = await rows("select public.get_vacations('2027-03-01','2027-03-01') as result");
+    assert.deepEqual(list.result.map((x: any) => x.user_id), [1,2]);
+    for (const {id} of hidden) {
+      await db.exec('savepoint hidden');
+      await assert.rejects(vacationCall('cancel_vacation', { ids: [id] }), (e: any) => e.code === 'PT409');
+      await db.exec('rollback to savepoint hidden');
+      assert.equal((await rows(`update public.urlaube set wholeday=0.5 where id=${id} returning id`)).length,0);
+    }
+    await db.query("select set_config('request.jwt.claim.sub',$1,true)", [bob]);
+    assert.equal((await rows('select * from public.urlaube where user_id=1')).length,0);
+  }, 'service_role');
+  await assert.rejects(asUser(() => vacationCall('cancel_vacation', { ids: [1] }), 'anon'), (e: any) => e.code === '42501');
+  await assert.rejects(asUser(() => rows("select public.get_vacations('2027-01-01','2027-01-02')"), 'anon'), (e: any) => e.code === '42501');
+});
+
+test('Urlaub: RPC prüft ungültige IDs/Argumente auch ohne Edge-Validierung', async () => {
+  for (const args of [{ids:[]},{ids:[1,1]},{ids:[null]},{ids:[1.5]},{ids:['1']},{ids:[1],user:2},{}]) {
+    await assert.rejects(asUser(() => vacationCall('cancel_vacation', args)), (e: any) => e.code === '22023');
+  }
+});

@@ -51,3 +51,12 @@ verify_jwt = false
 
 [functions.get_my_attendance_list]
 verify_jwt = true
+
+[functions.get_vacations]
+verify_jwt = true
+
+[functions.cancel_vacation]
+verify_jwt = true
+
+[functions.update_approved_vacation]
+verify_jwt = true

@@ -27,8 +27,14 @@ function request(body: unknown = payload, token = "user-jwt") {
 }
 test("Alle Endpunkte bilden ihre dokumentierten Parameter ab", () => {
   for (const name of functionNames) {
-    if (name === "get_my_attendance_list") {
+    if (name === "get_my_attendance_list" || name === "get_vacations") {
       assert.deepEqual(parameters(name, { from: "2026-10-01", to: "2026-10-31" }), { p_from: "2026-10-01", p_to: "2026-10-31" });
+      continue;
+    }
+    if (name === "cancel_vacation" || name === "update_approved_vacation") {
+      const args = name === "cancel_vacation" ? { ids: [1, 2] } : { id: 1, date: "2027-02-01", wholeday: 0.5 };
+      const request_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      assert.deepEqual(parameters(name, { request_id, ...args }), { p_request_id: request_id, p_operation: name, p_arguments: args });
       continue;
     }
     const body = name === "log_attendance_clockin" ? { user: 1 } : name.startsWith("log_attendance")
@@ -105,4 +111,24 @@ test("CORS, Methoden, Content-Type und ungültiges JSON", async () => {
   assert.equal((await handler(new Request("https://example.test"))).status, 405);
   assert.equal((await handler(new Request("https://example.test", { method: "POST", headers: { Authorization: "Bearer jwt" }, body: "{}" }))).status, 415);
   assert.equal((await handler(new Request("https://example.test", { method: "POST", headers: { Authorization: "Bearer jwt", "Content-Type": "application/json" }, body: "{" }))).status, 400);
+});
+
+test('Urlaub: Rücknahme validiert IDs, benutzt User-JWT und liefert Konflikte statt Erfolg', async () => {
+  const request_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  for (const ids of [[], [1,1], [0], ['1'], [null], Array.from({length:367},(_,i)=>i+1)]) {
+    assert.throws(() => parameters('cancel_vacation', { request_id, ids }));
+  }
+  assert.throws(() => parameters('cancel_vacation', { request_id, ids:[1], user:2 }));
+  assert.throws(() => parameters('update_approved_vacation', { request_id, id:1, date:'2027-02-30', wholeday:1 }));
+  for (const status of [200,409]) {
+    const handler = createHandler('cancel_vacation', { url:'https://project.test',key:'public-key',fetch:async (url,init) => {
+      assert.equal(new Headers(init?.headers).get('Authorization'),'Bearer user-jwt');
+      if (String(url).includes('/auth/')) return Response.json({id:'auth-user'});
+      assert.ok(String(url).endsWith('/rpc/vacation_execute'));
+      assert.deepEqual(JSON.parse(init?.body as string), {p_request_id:request_id,p_operation:'cancel_vacation',p_arguments:{ids:[1]}});
+      return status === 200 ? Response.json({count:1,deleted:[{id:1}]}) : Response.json({code:'PT409',message:'Keine Änderung vorgenommen.'},{status});
+    }});
+    assert.equal((await handler(request({request_id,ids:[1]}))).status,status);
+    assert.equal((await handler(request({request_id,ids:[1]},''))).status,401);
+  }
 });

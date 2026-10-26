@@ -35,7 +35,7 @@ apikey: <SUPABASE_PUBLISHABLE_KEY>
 Content-Type: application/json
 ```
 
-Der Access Token stammt aus einer Supabase-Auth-Anmeldung. API-Schlüssel oder CardID ersetzen diesen Login nicht. Funktionen prüfen den Benutzer über Auth und geben seinen JWT an die Datenbank weiter. RLS erlaubt nur das Erfassen eigener Daten. Vorgesetzte können zusätzlich Profile und Anwesenheit ihres direkten Teams lesen, aber nichts für ihr Team schreiben. Krankheit und Urlaub bleiben nur für die jeweilige Person sichtbar.
+Der Access Token stammt aus einer Supabase-Auth-Anmeldung. API-Schlüssel oder CardID ersetzen diesen Login nicht. Funktionen prüfen den Benutzer über Auth und geben seinen JWT an die Datenbank weiter. RLS erlaubt nur das Erfassen eigener Daten. Vorgesetzte können zusätzlich Profile, Anwesenheit und Urlaub ihres direkten Teams lesen. Eigene offene Urlaubsanträge können erstellt und gelöscht werden. Genehmigte Urlaubstage dürfen ausschließlich direkte Vorgesetzte ändern oder löschen. Krankheit bleibt nur für die jeweilige Person sichtbar.
 
 | Funktion | JSON-Felder |
 | --- | --- |
@@ -47,6 +47,14 @@ Der Access Token stammt aus einer Supabase-Auth-Anmeldung. API-Schlüssel oder C
 | `log_sickleave_multiday` | `user`, `from`, `to`, optional `wholeday` |
 | `log_vacation_single_day` | `user`, `date`, optional `wholeday` |
 | `log_vacation_multiday` | `user`, `from`, `to`, optional `wholeday` |
+| `get_vacations` | `from`, `to` (eigene und direkte Team-Einträge mit IDs) |
+| `cancel_vacation` | `request_id` (UUID), `ids` (1–366 eindeutige Eintrags-IDs) |
+| `update_approved_vacation` | `request_id` (UUID), `id`, `date`, `wholeday` (0.5/1) |
+
+Die Urlaubsverwaltung benötigt die Migration `vacation_management`. Löschungen
+sind atomar: Fehlt eine ID oder ist sie nicht löschbar, wird nichts gelöscht.
+Die beiden neuen Schreibendpunkte verwenden `vacation_execute` mit dem bestehenden
+Idempotenzprotokoll. Details und Agentenregeln: [Urlaubsverwaltung](docs/agent-integration.md#urlaubsanträge-zurückziehen-und-genehmigten-urlaub-ändern).
 
 `user` ist die Integer-ID aus `users`, nicht die Auth-UUID. Nicht aufgeführte Felder werden abgewiesen. Zeiten müssen ISO-8601 mit Sekunden und Zeitzone sein; Datumsfelder `YYYY-MM-DD`.
 
@@ -227,7 +235,7 @@ Die Views verwenden `security_invoker = true`: Über den Data API-Zugang sehen M
 
 ## Agentisches Gerüst
 
-Der MCP-Endpunkt bietet 12 Werkzeuge für Profil, Auswertung, eigene Buchungen sowie Krankheit und Urlaub. Alle Schreibwerkzeuge lösen die Identität aus der Anmeldung auf und verlangen `request_id` zur Wiederholungssicherheit. Erfolgreiche Agentenaktionen werden mit Ergebnis in `timestone_private.agent_requests` protokolliert. Unterschiedliche Argumente mit derselben ID werden abgewiesen. Fehlgeschlagene Aktionen hinterlassen weder Teilbuchungen noch Erfolgsbelege.
+Der MCP-Endpunkt bietet 15 Werkzeuge für Profil, Auswertung, eigene Buchungen sowie Krankheit und Urlaub. Alle Schreibwerkzeuge lösen die Identität aus der Anmeldung auf und verlangen `request_id` zur Wiederholungssicherheit. Erfolgreiche Agentenaktionen werden mit Ergebnis in `timestone_private.agent_requests` protokolliert. Unterschiedliche Argumente mit derselben ID werden abgewiesen. Fehlgeschlagene Aktionen hinterlassen weder Teilbuchungen noch Erfolgsbelege.
 
 Urlaub und Krankheit können mit Datumsbereichen geplant werden. Künftige Arbeitsschichten sind noch kein Planungsobjekt; der Agenten-RPC lehnt zukünftige Anwesenheitszeiten ab. Der Tagesabschluss läuft per Datenbank-Cron. Eine agentische Hintergrundautomatisierung für neue Anwesenheitsbuchungen ist noch nicht eingerichtet. Für echte automatische Buchungen braucht der Agent verlässliche Ereignisse und einen autorisierten Ablauf; Kalendertermine allein belegen keine tatsächliche Arbeitszeit.
 
