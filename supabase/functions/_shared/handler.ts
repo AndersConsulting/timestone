@@ -1,3 +1,4 @@
+import { formatPermissions } from "./permissions-report.ts";
 import { formatAttendanceList } from "./attendance-report.ts";
 
 export const functionNames = [
@@ -5,7 +6,7 @@ export const functionNames = [
   "log_sickleave_single_day", "log_sickleave_multiday",
   "log_vacation_single_day", "log_vacation_multiday",
   "log_attendance_clockin",
-  "get_my_attendance_list", "get_vacations", "cancel_vacation", "update_approved_vacation",
+  "get_my_permissions", "get_my_attendance_list", "get_vacations", "cancel_vacation", "update_approved_vacation",
 ] as const;
 export type FunctionName = typeof functionNames[number];
 
@@ -40,6 +41,10 @@ function timestamp(value: unknown, field: string): string {
 export function parameters(name: FunctionName, input: unknown): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new InputError("JSON-Objekt erforderlich.");
   const body = input as Record<string, unknown>;
+  if (name === "get_my_permissions") {
+    if (Object.keys(body).length) throw new InputError("Keine Parameter erforderlich; die Rolle kommt aus der Anmeldung.");
+    return {};
+  }
   if (name === "get_my_attendance_list" || name === "get_vacations") {
     if (Object.keys(body).some(key => key !== "from" && key !== "to")) throw new InputError("Nur from und to erforderlich.");
     const from = date(body.from, "from");
@@ -141,6 +146,9 @@ export function createHandler(name: FunctionName, dependencies: Dependencies) {
         }
         if (response.status === 401) return json(401, { error: "Anmeldung abgelaufen." });
         return json(502, { error: "Datenbankanfrage fehlgeschlagen." });
+      }
+      if (name === "get_my_permissions") {
+        return json(200, { ...data, text: formatPermissions(data) });
       }
       if (name === "get_my_attendance_list") {
         return json(200, { text: formatAttendanceList(data, args.p_from as string, args.p_to as string) });

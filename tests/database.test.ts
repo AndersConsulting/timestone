@@ -13,7 +13,7 @@ before(async () => {
     create role authenticated nologin;
     create role service_role nologin bypassrls;
     create schema auth;
-    create table auth.users (id uuid primary key);
+    create table auth.users (id uuid primary key, email text);
     create function auth.uid() returns uuid language sql stable as
       $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
     grant usage on schema public, auth to authenticated, anon, service_role;
@@ -490,4 +490,80 @@ test('Urlaub: RPC prüft ungültige IDs/Argumente auch ohne Edge-Validierung', a
   for (const args of [{ids:[]},{ids:[1,1]},{ids:[null]},{ids:[1.5]},{ids:['1']},{ids:[1],user:2},{}]) {
     await assert.rejects(asUser(() => vacationCall('cancel_vacation', args)), (e: any) => e.code === '22023');
   }
+});
+
+test('Berechtigungen: User ohne Team; Manager nur aus aktueller Vorgesetztenzuordnung', async () => {
+  await asUser(async () => {
+    const [report] = await rows('select public.get_my_permissions() as result');
+    assert.equal(report.result.role,'User');
+    assert.equal(report.result.permissions.length,9);
+    assert.ok(report.result.permissions.every((p: any) => !p.code.endsWith('_team')));
+  });
+  await asUser(async () => {
+    await db.exec('update public.users set vorgesetzter=1 where id=2; set local role authenticated');
+    const [manager] = await rows('select public.get_my_permissions() as result');
+    assert.equal(manager.result.role,'Manager');
+    assert.equal(manager.result.permissions.length,14);
+    assert.ok(manager.result.permissions.some((p: any) => p.code === 'vacation.update_approved_team'));
+    assert.ok(!manager.result.permissions.some((p: any) => p.code.includes('approve') && !p.code.includes('approved_team')));
+    // A manager's direct report is not automatically a manager.
+    await db.query("select set_config('request.jwt.claim.sub',$1,true)",[bob]);
+    assert.equal((await rows('select public.get_my_permissions() as result'))[0].result.role,'User');
+    await db.exec('set local role service_role; update public.users set vorgesetzter=null where id=2; set local role authenticated');
+    await db.query("select set_config('request.jwt.claim.sub',$1,true)",[alice]);
+    assert.equal((await rows('select public.get_my_permissions() as result'))[0].result.role,'User');
+  },'service_role');
+});
+
+test('Berechtigungen: kein Zugriff ohne Auth oder Mitarbeiterzuordnung', async () => {
+  await assert.rejects(asUser(() => rows('select public.get_my_permissions()'), 'anon'), (e: any) => e.code === '42501');
+  await assert.rejects(asUser(() => rows('select public.get_my_permissions()'), 'authenticated', '99999999-9999-4999-8999-999999999999'), (e: any) => e.code === '42501');
+});
+
+test('Admin: geschuetzte Rolle, globale Erfassung/Auswertung und Urlaubsverwaltung', async () => {
+  await db.exec('begin');
+  try {
+    await db.query('insert into timestone_private.app_admins(auth_user_id) values($1)',[alice]);
+    await db.query("select set_config('request.jwt.claim.sub',$1,true)",[alice]);
+    await db.exec(`insert into public.urlaube(user_id,date,is_approved) values(1,'2027-04-01',true),(2,'2027-04-01',false);
+      set local role authenticated;`);
+    const [report] = await rows('select public.get_my_permissions() as result');
+    assert.equal(report.result.role,'Admin');
+    assert.ok(report.result.permissions.some((p: any) => p.code === 'activity.create_all'));
+    assert.equal((await rows('select public.get_employees() as result'))[0].result.length,2);
+    const own = await vacationId(1,true);
+    const other = await vacationId(2,false);
+    await vacationCall('update_approved_vacation',{id:other,date:'2027-04-02',wholeday:0.5});
+    const cancelled = await vacationCall('cancel_vacation',{ids:[own,other]},'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
+    assert.equal(cancelled.count,2);
+    const args=['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','log_vacation_single_day',{user:2,date:'2027-04-03'}];
+    const created=(await db.query<any>('select public.agent_execute($1,$2,$3) as result',args)).rows[0].result;
+    assert.equal(created[0].user_id,2);
+    assert.equal(created[0].is_approved,false);
+    assert.deepEqual((await db.query<any>('select public.agent_execute($1,$2,$3) as result',args)).rows[0].result,created);
+    const activity=(await rows("select public.get_employee_activity(2,'2027-04-01','2027-04-30') as result"))[0].result;
+    assert.equal(activity.vacation.length,1);
+    for (const sql of [
+      'select * from timestone_private.app_admins',
+      `insert into timestone_private.app_admins(auth_user_id) values('${bob}')`,
+      'delete from timestone_private.app_admins',
+      "select public.agent_execute('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','unknown','{}')"
+    ]) {
+      await db.exec('savepoint guard');
+      await assert.rejects(db.exec(sql));
+      await db.exec('rollback to savepoint guard');
+    }
+    await db.query("select set_config('request.jwt.claim.sub',$1,true)",[bob]);
+    assert.equal((await rows('select public.get_my_permissions() as result'))[0].result.role,'User');
+    for (const sql of [
+      'select public.get_employees()',
+      "select public.get_employee_activity(1,'2027-04-01','2027-04-30')",
+      "select public.agent_execute('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','log_vacation_single_day','{\"user\":1,\"date\":\"2027-04-04\"}')",
+      `insert into timestone_private.app_admins(auth_user_id) values('${bob}')`
+    ]) {
+      await db.exec('savepoint forbidden');
+      await assert.rejects(db.exec(sql),(e: any)=>e.code==='42501');
+      await db.exec('rollback to savepoint forbidden');
+    }
+  } finally { await db.exec('rollback'); }
 });

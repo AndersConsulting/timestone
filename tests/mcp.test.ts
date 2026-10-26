@@ -32,11 +32,11 @@ async function call(method: string, params: unknown, fetcher: typeof fetch = asy
   } finally { await handler.close(); }
 }
 
-test("MCP bietet 15 klar annotierte Werkzeuge ohne frei wählbare Benutzer-ID", async () => {
+test("MCP bietet 19 klar annotierte Werkzeuge mit Benutzerwahl nur in Admin-Tools", async () => {
   const response = await call("tools/list", {});
-  assert.equal(response.result.tools.length, 15);
+  assert.equal(response.result.tools.length, 19);
   for (const tool of response.result.tools) {
-    assert.equal(tool.inputSchema.properties.user, undefined);
+    if (!["get_employee_activity", "admin_execute"].includes(tool.name)) assert.equal(tool.inputSchema.properties.user, undefined);
     assert.equal(tool.inputSchema.additionalProperties, false);
     if (!tool.name.startsWith("get_")) {
       assert.equal(tool.annotations.idempotentHint, true);
@@ -85,4 +85,27 @@ test('MCP: Urlaubsverwaltung verwendet idempotenten RPC und destruktive Annotati
     const response = await call('tools/call',{name:'cancel_vacation',arguments:{request_id:requestId,ids}});
     assert.ok(response.error || response.result.isError);
   }
+});
+
+test('MCP: Get Berechtigungen liefert Backend-Rolle als fertigen ASCII-Codeblock', async () => {
+  const response = await call('tools/call',{name:'get_my_permissions',arguments:{}},async (url,init) => {
+    assert.ok(String(url).endsWith('/rpc/get_my_permissions'));
+    assert.deepEqual(JSON.parse(init?.body as string),{});
+    return Response.json({role:'User',permissions:[{code:'permissions.read_self',label:'Meine Rolle sehen'}],notes:[]});
+  });
+  assert.match(response.result.content[0].text,/^```text\n/);
+  assert.match(response.result.content[0].text,/Du bist: User/);
+  const rejected = await call('tools/call',{name:'get_my_permissions',arguments:{role:'Admin'}});
+  assert.ok(rejected.error || rejected.result.isError);
+  const failed = await call('tools/call',{name:'get_my_permissions',arguments:{}},async () => Response.json({code:'42501',message:'Kein Mitarbeiterzugang.'},{status:403}));
+  assert.equal(failed.result.isError,true);
+});
+
+test('MCP: Admin-Erfassung reicht explizite Zielperson an DB-Autorisierung weiter', async () => {
+  const response = await call('tools/call',{name:'admin_execute',arguments:{request_id:requestId,user:2,operation:'log_sickleave_single_day',arguments:{date:'2026-10-26'}}},async (url,init) => {
+    assert.ok(String(url).endsWith('/rpc/agent_execute'));
+    assert.deepEqual(JSON.parse(init?.body as string),{p_request_id:requestId,p_operation:'log_sickleave_single_day',p_arguments:{date:'2026-10-26',user:2}});
+    return Response.json({code:'42501',message:'Nur Admins duerfen fuer andere Mitarbeitende schreiben.'},{status:403});
+  });
+  assert.equal(response.result.isError,true);
 });

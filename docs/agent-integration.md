@@ -14,6 +14,8 @@ Das ist die Timestone-Anwendungsschnittstelle, nicht der administrative Supabase
 
 | Werkzeug | Zweck |
 | --- | --- |
+| `get_my_permissions` | Eigene Rolle und erlaubte Funktionen als ASCII-Liste |
+| `get_employees` / `get_employee_activity` / `admin_execute` | Admin: Personen zuordnen, deren Daten lesen und für sie erfassen |
 | `get_me` | Eigenes Profil, aktuelle Serverzeit und Zeitzone |
 | `get_my_attendance_list` | Eigene Anwesenheit, Krankheit und Urlaub als fertige ASCII-Tabelle für den Chat (`from`, `to`) |
 | `get_my_activity` | Eigene Buchungen, Krankheit und Urlaub in einem Datumsbereich |
@@ -105,3 +107,54 @@ Deployment: zuerst die Migration anwenden, dann `get_vacations`, `cancel_vacatio
 Anschließend die Tool-Liste in Copilot Studio aktualisieren und den Agenten neu
 veröffentlichen. Alte Instructions „nur eigene Daten schreiben“ für Urlaub durch
 obige Regeln ersetzen; für Anwesenheit und Krankheit bleibt die Beschränkung bestehen.
+
+## Get Berechtigungen
+
+`get_my_permissions()` (Anzeigename **Get Berechtigungen**) liefert einen fertigen
+ASCII-Codeblock mit `Du bist: User`, `Du bist: Manager` oder `Du bist: Admin`
+und den tatsächlich implementierten Funktionen. Im Chat unverändert ausgeben.
+Keine Parameter: Weder Benutzer-ID noch gewünschte Rolle können übergeben werden.
+Die gleichnamige Edge Function akzeptiert POST `{}` mit User-JWT und gibt
+`role`, `permissions` (stabile Codes und Beschriftungen), `notes` und `text` zurück.
+
+Rollenbestimmung, in dieser Reihenfolge:
+
+1. **Admin:** Auth-UUID ist in der geschützten Tabelle
+   `timestone_private.app_admins` hinterlegt.
+2. **Manager:** Mindestens ein Mitarbeiter hat den angemeldeten Benutzer als
+   `vorgesetzter`. Es gelten nur direkte Teamzuordnungen.
+3. **User:** Zugeordnetes Mitarbeiterprofil ohne die obigen Merkmale.
+
+Ohne zugeordnetes Mitarbeiterprofil wird die Anfrage abgelehnt. Die Anzeige ist
+nur eine Auskunft; jede Aktion wird weiterhin durch RLS autorisiert. Die Rolle
+wird niemals aus E-Mail-Text, Prompts oder editierbaren Auth-Metadaten abgeleitet.
+
+Admins haben die vorhandenen Erfassungs- und Leserechte für alle Mitarbeitenden,
+können auch eigene genehmigte und fremde offene Urlaubstage ändern/löschen:
+
+- `get_employees()` liefert Mitarbeiter-ID, Namen und E-Mail zur eindeutigen Zuordnung.
+- `get_employee_activity(user, from, to)` liest Zeiten, Krankheit und Urlaub einer Person.
+- `admin_execute(request_id, user, operation, arguments)` verwendet die vorhandenen
+  acht Erfassungs-/Stempeloperationen für diese Person. Identität und Berechtigung
+  prüft die Datenbank; technische Wiederholungen verwenden dieselbe Anfrage-ID.
+- `get_attendance_summary` und `get_vacations` umfassen für Admins alle Mitarbeitenden.
+- `cancel_vacation` und `update_approved_vacation` gelten für Admins auch für offene
+  und eigene Urlaubstage. Genehmigungsstatus und Eigentümer bleiben unverändert.
+
+Es entstehen dadurch keine neuen Agentenfunktionen zur Urlaubsgenehmigung,
+Rollenvergabe oder allgemeinen Bearbeitung/Löschung von Krankheit und Anwesenheit.
+Neue Urlaubsanträge bleiben ungenehmigt. Für User/Manager gelten weiterhin die
+Regeln aus dem vorherigen Abschnitt; Admin ist die explizite Ausnahme.
+
+Die Migration `admin_access` sieht auf ausdrücklichen Auftrag diese Konten vor:
+`lh@andersconsulting.com`, `fa@andersconsulting.com`, `sh@andersconsulting.com`.
+Sie übernimmt ausschließlich bereits vorhandene Auth-UUIDs mit passendem
+Mitarbeiterdatensatz und übereinstimmender Auth-/Mitarbeiter-E-Mail. Nicht vorhandene
+oder nicht zugeordnete Konten werden nicht erstellt und erhalten keine Rolle.
+Beim Deployment die drei Zuweisungen prüfen. Spätere Rollenvergaben erfolgen nur
+über eine administrative Migration; eine Änderung der Profil-E-Mail vergibt keine Rolle.
+
+Deployment-Reihenfolge: `vacation_management`, `permissions_report`, `admin_access`;
+danach `get_my_permissions` und die aktualisierte `mcp` Edge Function (sowie die
+noch ausstehenden Urlaubs-Edge-Functions) veröffentlichen. Tool-Liste und Instructions
+in Copilot Studio aktualisieren, anschließend den Agenten veröffentlichen.

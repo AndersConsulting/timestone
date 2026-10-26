@@ -27,6 +27,10 @@ function request(body: unknown = payload, token = "user-jwt") {
 }
 test("Alle Endpunkte bilden ihre dokumentierten Parameter ab", () => {
   for (const name of functionNames) {
+    if (name === "get_my_permissions") {
+      assert.deepEqual(parameters(name, {}), {});
+      continue;
+    }
     if (name === "get_my_attendance_list" || name === "get_vacations") {
       assert.deepEqual(parameters(name, { from: "2026-10-01", to: "2026-10-31" }), { p_from: "2026-10-01", p_to: "2026-10-31" });
       continue;
@@ -131,4 +135,20 @@ test('Urlaub: Rücknahme validiert IDs, benutzt User-JWT und liefert Konflikte s
     assert.equal((await handler(request({request_id,ids:[1]}))).status,status);
     assert.equal((await handler(request({request_id,ids:[1]},''))).status,401);
   }
+});
+
+test('Get Berechtigungen: keine fremde Identitaet, Auth erforderlich, strukturierte Daten und ASCII', async () => {
+  for (const args of [{user:2},{role:'Admin'}]) assert.throws(() => parameters('get_my_permissions',args));
+  const handler = createHandler('get_my_permissions',{url:'https://project.test',key:'public-key',fetch:async (url,init) => {
+    assert.equal(new Headers(init?.headers).get('Authorization'),'Bearer user-jwt');
+    if(String(url).includes('/auth/')) return Response.json({id:'auth-user'});
+    assert.ok(String(url).endsWith('/rpc/get_my_permissions'));
+    return Response.json({role:'User',permissions:[{code:'permissions.read_self',label:'Meine Rolle sehen'}],notes:[]});
+  }});
+  const response = await handler(request({}));
+  assert.equal(response.status,200);
+  const body = await response.json();
+  assert.equal(body.role,'User');
+  assert.match(body.text,/Du bist: User/);
+  assert.equal((await handler(request({},''))).status,401);
 });

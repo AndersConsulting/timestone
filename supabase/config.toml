@@ -60,3 +60,6 @@ verify_jwt = true
 
 [functions.update_approved_vacation]
 verify_jwt = true
+
+[functions.get_my_permissions]
+verify_jwt = true

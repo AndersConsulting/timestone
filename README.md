@@ -35,13 +35,14 @@ apikey: <SUPABASE_PUBLISHABLE_KEY>
 Content-Type: application/json
 ```
 
-Der Access Token stammt aus einer Supabase-Auth-Anmeldung. API-Schlüssel oder CardID ersetzen diesen Login nicht. Funktionen prüfen den Benutzer über Auth und geben seinen JWT an die Datenbank weiter. RLS erlaubt nur das Erfassen eigener Daten. Vorgesetzte können zusätzlich Profile, Anwesenheit und Urlaub ihres direkten Teams lesen. Eigene offene Urlaubsanträge können erstellt und gelöscht werden. Genehmigte Urlaubstage dürfen ausschließlich direkte Vorgesetzte ändern oder löschen. Krankheit bleibt nur für die jeweilige Person sichtbar.
+Der Access Token stammt aus einer Supabase-Auth-Anmeldung. API-Schlüssel oder CardID ersetzen diesen Login nicht. Funktionen prüfen den Benutzer über Auth und geben seinen JWT an die Datenbank weiter. RLS erlaubt nur das Erfassen eigener Daten. Vorgesetzte können zusätzlich Profile, Anwesenheit und Urlaub ihres direkten Teams lesen. Eigene offene Urlaubsanträge können erstellt und gelöscht werden. Genehmigte Urlaubstage dürfen ausschließlich direkte Vorgesetzte ändern oder löschen. Krankheit bleibt für User/Manager nur für die jeweilige Person sichtbar. Die geschützte Admin-Rolle erweitert die vorhandenen Funktionen auf alle Mitarbeitenden. Rollenübersicht und Admin-Zuweisung: [Get Berechtigungen](docs/agent-integration.md#get-berechtigungen).
 
 | Funktion | JSON-Felder |
 | --- | --- |
 | `log_attendance_without_break` | `user`, `start`, `end` |
 | `log_attendance_with_break` | `user`, `start`, `end`, `startBreak`, `endBreak` |
 | `log_attendance_clockin` | `user` |
+| `get_my_permissions` | Keine Felder: `{}`; liefert Rolle und Berechtigungen als ASCII-Liste |
 | `get_my_attendance_list` | `from`, `to` (nur eigene Daten, keine Benutzer-ID) |
 | `log_sickleave_single_day` | `user`, `date`, optional `wholeday` |
 | `log_sickleave_multiday` | `user`, `from`, `to`, optional `wholeday` |
@@ -235,7 +236,7 @@ Die Views verwenden `security_invoker = true`: Über den Data API-Zugang sehen M
 
 ## Agentisches Gerüst
 
-Der MCP-Endpunkt bietet 15 Werkzeuge für Profil, Auswertung, eigene Buchungen sowie Krankheit und Urlaub. Alle Schreibwerkzeuge lösen die Identität aus der Anmeldung auf und verlangen `request_id` zur Wiederholungssicherheit. Erfolgreiche Agentenaktionen werden mit Ergebnis in `timestone_private.agent_requests` protokolliert. Unterschiedliche Argumente mit derselben ID werden abgewiesen. Fehlgeschlagene Aktionen hinterlassen weder Teilbuchungen noch Erfolgsbelege.
+Der MCP-Endpunkt bietet 19 Werkzeuge für Profil, Auswertung, eigene Buchungen sowie Krankheit und Urlaub. Alle Schreibwerkzeuge lösen die Identität aus der Anmeldung auf und verlangen `request_id` zur Wiederholungssicherheit. Erfolgreiche Agentenaktionen werden mit Ergebnis in `timestone_private.agent_requests` protokolliert. Unterschiedliche Argumente mit derselben ID werden abgewiesen. Fehlgeschlagene Aktionen hinterlassen weder Teilbuchungen noch Erfolgsbelege.
 
 Urlaub und Krankheit können mit Datumsbereichen geplant werden. Künftige Arbeitsschichten sind noch kein Planungsobjekt; der Agenten-RPC lehnt zukünftige Anwesenheitszeiten ab. Der Tagesabschluss läuft per Datenbank-Cron. Eine agentische Hintergrundautomatisierung für neue Anwesenheitsbuchungen ist noch nicht eingerichtet. Für echte automatische Buchungen braucht der Agent verlässliche Ereignisse und einen autorisierten Ablauf; Kalendertermine allein belegen keine tatsächliche Arbeitszeit.
 
